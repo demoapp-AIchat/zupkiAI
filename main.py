@@ -28,10 +28,10 @@ import websockets
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(_name_)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(_file_), '.env'))
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 
 # Debug environment variables
 logger.info(f"OPENAI_API_KEY: {os.getenv('OPENAI_API_KEY')[:10]}...")
@@ -112,15 +112,17 @@ def health_check():
 async def schedule_call():
     """Initiate a call to the user with AI interaction."""
     try:
+        twiml = f"""
+            <Response>
+                <Say voice="Polly.Joanna">Hello, this is your AI assistant. Please speak, and I’ll respond to you.</Say>
+                <Connect>
+                    <Stream url="wss://{os.getenv('AWS_BASE_URL')}/media-stream" />
+                </Connect>
+            </Response>
+        """
+        logger.info(f"TwiML Response: {twiml}")
         call = client.calls.create(
-            twiml=f"""
-                <Response>
-                    <Say voice="Polly.Joanna">Hello, this is your AI assistant. Please speak, and I’ll respond to you.</Say>
-                    <Connect>
-                        <Stream url="wss://{os.getenv('AWS_BASE_URL')}/media-stream" />
-                    </Connect>
-                </Response>
-            """,
+            twiml=twiml,
             to=os.getenv("YOUR_PHONE_NUMBER"),
             from_=os.getenv("TWILIO_PHONE_NUMBER"),
         )
@@ -134,7 +136,7 @@ async def schedule_call():
 async def handle_media_stream(websocket: WebSocket):
     """Handle WebSocket connections between Twilio and OpenAI Realtime API."""
     await websocket.accept()
-    logger.info("WebSocket connected for media stream")
+    logger.info(f"WebSocket connected from {websocket.client} at {pendulum.now('Asia/Kolkata').to_datetime_string()}")
     
     try:
         async with websockets.connect(
@@ -144,7 +146,7 @@ async def handle_media_stream(websocket: WebSocket):
                 "OpenAI-Beta": "realtime=v1"
             }
         ) as openai_ws:
-            # Initialize OpenAI session
+            logger.info(f"Connected to OpenAI Realtime API at {openai_ws.url}")
             session_update = {
                 "type": "session.update",
                 "session": {
@@ -158,7 +160,7 @@ async def handle_media_stream(websocket: WebSocket):
                 }
             }
             await openai_ws.send(json.dumps(session_update))
-            logger.info("OpenAI session initialized")
+            logger.info("OpenAI session initialized successfully")
 
             stream_sid = None
 
@@ -168,12 +170,14 @@ async def handle_media_stream(websocket: WebSocket):
                 try:
                     async for message in websocket.iter_text():
                         data = json.loads(message)
+                        logger.info(f"Received from Twilio: {data['event']} | Data: {data}")
                         if data["event"] == "media" and openai_ws.open:
                             audio_append = {
                                 "type": "input_audio_buffer.append",
                                 "audio": data["media"]["payload"]
                             }
                             await openai_ws.send(json.dumps(audio_append))
+                            logger.info("Sent audio to OpenAI")
                         elif data["event"] == "start":
                             stream_sid = data["start"]["streamSid"]
                             logger.info(f"Incoming stream started: {stream_sid}")
@@ -181,6 +185,8 @@ async def handle_media_stream(websocket: WebSocket):
                     logger.info("Twilio WebSocket disconnected")
                     if openai_ws.open:
                         await openai_ws.close()
+                except Exception as e:
+                    logger.error(f"Error in receive_from_twilio: {e}")
 
             async def send_to_twilio():
                 """Receive audio from OpenAI and send to Twilio."""
@@ -188,8 +194,9 @@ async def handle_media_stream(websocket: WebSocket):
                 try:
                     async for openai_message in openai_ws:
                         response = json.loads(openai_message)
+                        logger.info(f"Received from OpenAI: {response['type']} | Response: {response}")
                         if response["type"] in ["session.updated"]:
-                            logger.info(f"Received event: {response['type']}")
+                            logger.info(f"Session updated event: {response}")
                         if response["type"] == "response.audio.delta" and response.get("delta"):
                             try:
                                 audio_payload = base64.b64encode(base64.b64decode(response["delta"])).decode("utf-8")
@@ -199,10 +206,10 @@ async def handle_media_stream(websocket: WebSocket):
                                     "media": {"payload": audio_payload}
                                 }
                                 await websocket.send_json(audio_delta)
+                                logger.info(f"Sent audio delta to Twilio for streamSid: {stream_sid}")
                             except Exception as e:
                                 logger.error(f"Error processing audio data: {e}")
                         if response["type"] == "response.audio.transcript":
-                            # Store transcription in Firebase
                             try:
                                 ref = db.reference("callResponses")
                                 ref.push({
@@ -226,64 +233,15 @@ async def handle_media_stream(websocket: WebSocket):
         await websocket.close()
         logger.info("WebSocket closed")
 
-# Call automation endpoints (kept for potential reuse)
+# Remove legacy recording endpoints as they are replaced by Media Streams
 def initiate_call():
-    """Initiate a Twilio call (kept for potential future use)."""
-    try:
-        call = client.calls.create(
-            twiml=f"""
-                <Response>
-                    <Say voice="Polly.Joanna">Hello, this is your AI assistant calling on behalf of your child. Have you eaten today?</Say>
-                    <Record action="{os.getenv('AWS_BASE_URL')}/handle-response" maxLength="30" transcribe="true" transcribeCallback="{os.getenv('AWS_BASE_URL')}/transcription" timeout="5" finishOnKey="#"/>
-                </Response>
-            """,
-            to=os.getenv("YOUR_PHONE_NUMBER"),
-            from_=os.getenv("TWILIO_PHONE_NUMBER"),
-        )
-        logger.info(f"Call initiated: {call.sid} at {pendulum.now('Asia/Kolkata').to_datetime_string()}")
-        return {"status": "success", "call_sid": call.sid}
-    except Exception as e:
-        logger.error(f"Error initiating call: {e}")
-        return {"status": "error", "message": str(e)}
+    """Initiate a Twilio call (legacy, commented out)."""
+    pass
 
 async def get_openai_response(transcription: str, call_sid: str) -> str:
-    """Generate AI response using OpenAI (kept for potential future use)."""
-    try:
-        response = await openai_client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {
-                    "role": "user",
-                    "content": f"Your mom said: '{transcription}'. Respond politely as an AI assistant calling on behalf of her child, acknowledging her response about eating. Keep it short and conversational."
-                }
-            ],
-            max_tokens=50,
-            temperature=0.5
-        )
-        ai_response = response.choices[0].message.content.strip()
-        logger.info(f"Call SID: {call_sid} | OpenAI response for transcription '{transcription}': {ai_response}")
-        return ai_response or "Thank you, I’ll let your child know."
-    except Exception as e:
-        logger.error(f"Call SID: {call_sid} | Error fetching OpenAI response: {str(e)}")
-        return "Thank you, I’ll let your child know."
+    """Generate AI response using OpenAI (legacy, commented out)."""
+    pass
 
 async def fetch_transcription(recording_sid: str, call_sid: str) -> str:
-    """Fetch transcription from Twilio API (kept for potential future use)."""
-    try:
-        for _ in range(3):  # Retry up to 3 times
-            transcriptions = client.transcriptions.list(recording_sid=recording_sid)
-            if transcriptions:
-                transcription = transcriptions[0]
-                if transcription.status == "completed":
-                    logger.info(f"Call SID: {call_sid} | Transcription fetched: {transcription.transcription_text}")
-                    return transcription.transcription_text
-                elif transcription.status == "in-progress":
-                    logger.info(f"Call SID: {call_sid} | Transcription in progress, retrying...")
-            await asyncio.sleep(2)  # Wait 2 seconds
-        logger.warning(f"Call SID: {call_sid} | Transcription not available after retries")
-        return "No transcription available"
-    except Exception as e:
-        logger.error(f"Call SID: {call_sid} | Error fetching transcription: {str(e)}")
-        return "No transcription available"
-
-# Removed /incoming-call, /handle-response, and /transcription endpoints as they are replaced by /schedule-call with media stream
+    """Fetch transcription from Twilio API (legacy, commented out)."""
+    pass
