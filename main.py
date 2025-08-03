@@ -28,10 +28,10 @@ import websockets
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)  # Fixed typo: __name__ instead of _name_
+logger = logging.getLogger(__name__)
 
 # Load environment variables
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))  # Fixed typo: __file__ instead of _file_
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
 
 # Debug environment variables
 logger.info(f"OPENAI_API_KEY: {os.getenv('OPENAI_API_KEY')[:10]}...")
@@ -112,14 +112,14 @@ def health_check():
 async def schedule_call():
     """Initiate a call to the user with AI interaction."""
     try:
-        twiml = f"""
-            <Response>
-                <Say voice="Polly.Joanna">Hello, this is your AI assistant. Please speak, and I’ll respond to you.</Say>
-                <Connect>
-                    <Stream url="wss://{os.getenv('AWS_BASE_URL')}/media-stream" />
-                </Connect>
-            </Response>
-        """
+        # Use VoiceResponse to generate valid TwiML
+        response = VoiceResponse()
+        response.say("Hello, this is your AI assistant. Please speak, and I’ll respond to you.", voice="Polly.Joanna")
+        connect = Connect()
+        connect.stream(url=f"wss://{os.getenv('AWS_BASE_URL').replace('https://', '')}/media-stream")
+        response.append(connect)
+        
+        twiml = str(response)
         logger.info(f"TwiML Response: {twiml}")
         call = client.calls.create(
             twiml=twiml,
@@ -180,7 +180,7 @@ async def handle_media_stream(websocket: WebSocket):
                             logger.info("Sent audio to OpenAI")
                         elif data["event"] == "start":
                             stream_sid = data["start"]["streamSid"]
-                            logger.info(f"Incoming stream started: {stream_sid}")
+                            logger.info(f"Incoming stream started: {streamSid}")
                 except WebSocketDisconnect:
                     logger.info("Twilio WebSocket disconnected")
                     if openai_ws.open:
