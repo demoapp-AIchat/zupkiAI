@@ -1,6 +1,6 @@
 import os
 import logging
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect,Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -150,20 +150,26 @@ async def media_stream(websocket: WebSocket):
             logger.info("OpenAI session initialized")
 
             stream_sid = None
+            audio_received = False
 
             async def receive_from_twilio():
-                nonlocal stream_sid
+                nonlocal stream_sid, audio_received
                 try:
                     async for message in websocket.iter_text():
                         data = json.loads(message)
                         logger.info(f"Received from Twilio: {data['event']} | Data: {data}")
                         if data["event"] == "media":
-                            # Send audio to OpenAI as a dictionary, not a JSON string
+                            audio_received = True
+                            # Send audio to OpenAI as a dictionary
                             await connection.send({
                                 "type": "input_audio_buffer.append",
                                 "audio": data["media"]["payload"]
                             })
                             logger.info("Sent audio to OpenAI")
+                            # Trigger response after receiving audio
+                            if not await connection.is_response_in_progress():
+                                await connection.response.create()
+                                logger.info("Triggered OpenAI response")
                         elif data["event"] == "start":
                             stream_sid = data["start"]["streamSid"]
                             logger.info(f"Incoming stream started: {stream_sid}")
