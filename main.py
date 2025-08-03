@@ -16,7 +16,8 @@ from twilio.rest import Client
 from openai import AsyncOpenAI
 import pendulum
 import asyncio
-endpoints.auth import router as auth_router
+
+from endpoints.auth import router as auth_router
 from endpoints.user import router as user_router
 from endpoints.health import router as health_router
 from endpoints.reminders import router as reminders_router
@@ -24,6 +25,7 @@ from endpoints.chat import router as chat_router, schedule_daily_question
 from endpoints.todo import router as todo_router
 from endpoints.mood import router as mood_router
 from endpoints.conversation import router as conversation_router
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -89,7 +91,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# Include routers from endpoint modules (assuming these are defined elsewhere)
+# Include routers
 app.include_router(auth_router, prefix="")
 app.include_router(user_router, prefix="")
 app.include_router(health_router, prefix="")
