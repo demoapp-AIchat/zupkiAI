@@ -1,6 +1,6 @@
 import os
 import logging
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -11,7 +11,7 @@ import firebase_admin
 from firebase_admin import credentials, db
 import base64
 import json
-from twilio.twiml.voice_response import VoiceResponse
+from twilio.twiml.voice_response import VoiceResponse, Connect, Say
 from twilio.rest import Client
 from openai import AsyncOpenAI
 import pendulum
@@ -24,13 +24,14 @@ from endpoints.chat import router as chat_router, schedule_daily_question
 from endpoints.todo import router as todo_router
 from endpoints.mood import router as mood_router
 from endpoints.conversation import router as conversation_router
+import websockets
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
+logger = logging.getLogger(_name_)
 
 # Load environment variables
-load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '.env'))
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(_file_), '.env'))
 
 # Debug environment variables
 logger.info(f"OPENAI_API_KEY: {os.getenv('OPENAI_API_KEY')[:10]}...")
@@ -86,7 +87,7 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     yield
     scheduler.shutdown()
-    logger.info("Scheduler stopped")       
+    logger.info("Scheduler stopped")
 
 app = FastAPI(lifespan=lifespan)
 
@@ -107,8 +108,146 @@ def health_check():
     return {"status": "API is working!"}
 
 # Call automation endpoints
+@app.post("/schedule-call")
+async def schedule_call():
+    """Initiate a call to the user with AI interaction."""
+    try:
+        call = client.calls.create(
+            twiml=f"""
+                <Response>
+                    <Say voice="Polly.Joanna">Hello, this is your AI assistant. Please speak, and I’ll respond to you.</Say>
+                    <Connect>
+                        <Stream url="wss://{os.getenv('AWS_BASE_URL')}/media-stream" />
+                    </Connect>
+                </Response>
+            """,
+            to=os.getenv("YOUR_PHONE_NUMBER"),
+            from_=os.getenv("TWILIO_PHONE_NUMBER"),
+        )
+        logger.info(f"Call initiated: {call.sid} at {pendulum.now('Asia/Kolkata').to_datetime_string()}")
+        return {"message": "Call initiated successfully", "call_sid": call.sid}
+    except Exception as e:
+        logger.error(f"Error initiating call: {e}")
+        return {"message": "Failed to initiate call", "error": str(e)}
+
+@app.websocket("/media-stream")
+async def handle_media_stream(websocket: WebSocket):
+    """Handle WebSocket connections between Twilio and OpenAI Realtime API."""
+    await websocket.accept()
+    logger.info("WebSocket connected for media stream")
+    
+    try:
+        async with websockets.connect(
+            "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01",
+            extra_headers={
+                "Authorization": f"Bearer {os.getenv('OPENAI_API_KEY')}",
+                "OpenAI-Beta": "realtime=v1"
+            }
+        ) as openai_ws:
+            # Initialize OpenAI session
+            session_update = {
+                "type": "session.update",
+                "session": {
+                    "turn_detection": {"type": "server_vad"},
+                    "input_audio_format": "g711_ulaw",
+                    "output_audio_format": "g711_ulaw",
+                    "voice": "alloy",
+                    "instructions": "You are a friendly AI assistant. Listen to the user’s response and reply back politely and conversationally, addressing their specific input.",
+                    "modalities": ["text", "audio"],
+                    "temperature": 0.8
+                }
+            }
+            await openai_ws.send(json.dumps(session_update))
+            logger.info("OpenAI session initialized")
+
+            stream_sid = None
+
+            async def receive_from_twilio():
+                """Receive audio data from Twilio and send to OpenAI."""
+                nonlocal stream_sid
+                try:
+                    async for message in websocket.iter_text():
+                        data = json.loads(message)
+                        if data["event"] == "media" and openai_ws.open:
+                            audio_append = {
+                                "type": "input_audio_buffer.append",
+                                "audio": data["media"]["payload"]
+                            }
+                            await openai_ws.send(json.dumps(audio_append))
+                        elif data["event"] == "start":
+                            stream_sid = data["start"]["streamSid"]
+                            logger.info(f"Incoming stream started: {stream_sid}")
+                except WebSocketDisconnect:
+                    logger.info("Twilio WebSocket disconnected")
+                    if openai_ws.open:
+                        await openai_ws.close()
+
+            async def send_to_twilio():
+                """Receive audio from OpenAI and send to Twilio."""
+                nonlocal stream_sid
+                try:
+                    async for openai_message in openai_ws:
+                        response = json.loads(openai_message)
+                        if response["type"] in ["session.updated"]:
+                            logger.info(f"Received event: {response['type']}")
+                        if response["type"] == "response.audio.delta" and response.get("delta"):
+                            try:
+                                audio_payload = base64.b64encode(base64.b64decode(response["delta"])).decode("utf-8")
+                                audio_delta = {
+                                    "event": "media",
+                                    "streamSid": stream_sid,
+                                    "media": {"payload": audio_payload}
+                                }
+                                await websocket.send_json(audio_delta)
+                            except Exception as e:
+                                logger.error(f"Error processing audio data: {e}")
+                        if response["type"] == "response.audio.transcript":
+                            # Store transcription in Firebase
+                            try:
+                                ref = db.reference("callResponses")
+                                ref.push({
+                                    "transcription": response.get("transcript", "No transcript"),
+                                    "aiResponse": response.get("transcript", "No response"),
+                                    "timestamp": pendulum.now("Asia/Kolkata").to_datetime_string(),
+                                    "phoneNumber": os.getenv("YOUR_PHONE_NUMBER"),
+                                    "callSid": stream_sid or "Unknown",
+                                    "recordingSid": "Streaming",
+                                })
+                                logger.info(f"Call SID: {stream_sid} | Transcription stored in Firebase")
+                            except Exception as e:
+                                logger.error(f"Call SID: {stream_sid} | Error storing transcription: {e}")
+                except Exception as e:
+                    logger.error(f"Error in send_to_twilio: {e}")
+
+            await asyncio.gather(receive_from_twilio(), send_to_twilio())
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        await websocket.close()
+        logger.info("WebSocket closed")
+
+# Call automation endpoints (kept for potential reuse)
+def initiate_call():
+    """Initiate a Twilio call (kept for potential future use)."""
+    try:
+        call = client.calls.create(
+            twiml=f"""
+                <Response>
+                    <Say voice="Polly.Joanna">Hello, this is your AI assistant calling on behalf of your child. Have you eaten today?</Say>
+                    <Record action="{os.getenv('AWS_BASE_URL')}/handle-response" maxLength="30" transcribe="true" transcribeCallback="{os.getenv('AWS_BASE_URL')}/transcription" timeout="5" finishOnKey="#"/>
+                </Response>
+            """,
+            to=os.getenv("YOUR_PHONE_NUMBER"),
+            from_=os.getenv("TWILIO_PHONE_NUMBER"),
+        )
+        logger.info(f"Call initiated: {call.sid} at {pendulum.now('Asia/Kolkata').to_datetime_string()}")
+        return {"status": "success", "call_sid": call.sid}
+    except Exception as e:
+        logger.error(f"Error initiating call: {e}")
+        return {"status": "error", "message": str(e)}
+
 async def get_openai_response(transcription: str, call_sid: str) -> str:
-    """Generate AI response using OpenAI."""
+    """Generate AI response using OpenAI (kept for potential future use)."""
     try:
         response = await openai_client.chat.completions.create(
             model="gpt-3.5-turbo",
@@ -129,7 +268,7 @@ async def get_openai_response(transcription: str, call_sid: str) -> str:
         return "Thank you, I’ll let your child know."
 
 async def fetch_transcription(recording_sid: str, call_sid: str) -> str:
-    """Fetch transcription from Twilio API."""
+    """Fetch transcription from Twilio API (kept for potential future use)."""
     try:
         for _ in range(3):  # Retry up to 3 times
             transcriptions = client.transcriptions.list(recording_sid=recording_sid)
@@ -147,111 +286,4 @@ async def fetch_transcription(recording_sid: str, call_sid: str) -> str:
         logger.error(f"Call SID: {call_sid} | Error fetching transcription: {str(e)}")
         return "No transcription available"
 
-def initiate_call():
-    """Initiate a Twilio call."""
-    try:
-        call = client.calls.create(
-            twiml=f"""
-                <Response>
-                    <Say voice="Polly.Joanna">Hello, this is your AI assistant calling on behalf of your child. Have you eaten today?</Say>
-                    <Record action="{os.getenv('AWS_BASE_URL')}/handle-response" maxLength="30" transcribe="true" transcribeCallback="{os.getenv('AWS_BASE_URL')}/transcription" timeout="5" finishOnKey="#"/>
-                </Response>
-            """,
-            to=os.getenv("YOUR_PHONE_NUMBER"),
-            from_=os.getenv("TWILIO_PHONE_NUMBER"),
-        )
-        logger.info(f"Call initiated: {call.sid} at {pendulum.now('Asia/Kolkata').to_datetime_string()}")
-        return {"status": "success", "call_sid": call.sid}
-    except Exception as e:
-        logger.error(f"Error initiating call: {e}")
-        return {"status": "error", "message": str(e)}
-
-@app.post("/schedule-call")
-async def schedule_call():
-    """Initiate a call to check if the parent has eaten."""
-    result = initiate_call()
-    if result["status"] == "success":
-        logger.info(f"Call triggered immediately | Call SID: {result['call_sid']} at {pendulum.now('Asia/Kolkata').to_datetime_string()}")
-        return {"message": "Call initiated successfully", "call_sid": result["call_sid"]}
-    else:
-        return {"message": "Failed to initiate call", "error": result["message"]}
-
-@app.post("/handle-response")
-async def handle_response(request: Request):
-    """Handle Twilio call response and generate summary."""
-    form_data = await request.form()
-    call_sid = form_data.get("CallSid", "Unknown call SID")
-    recording_url = form_data.get("RecordingUrl", "No recording URL")
-    recording_sid = form_data.get("RecordingSid", "Unknown recording SID")
-    recording_duration = form_data.get("RecordingDuration", "Unknown duration")
-    transcription = form_data.get("TranscriptionText", None)
-    
-    logger.info(f"Handle response triggered for Call SID: {call_sid} at {pendulum.now('Asia/Kolkata').to_datetime_string()}")
-    logger.info(f"Recording URL: {recording_url}")
-    logger.info(f"Recording SID: {recording_sid}")
-    logger.info(f"Recording Duration: {recording_duration} seconds")
-    
-    # Fetch transcription if not provided
-    if not transcription:
-        transcription = await fetch_transcription(recording_sid, call_sid)
-    
-    ai_response = await get_openai_response(transcription, call_sid)
-    logger.info(f"*** Call Summary *** Call SID: {call_sid}, Transcription: {transcription}, AI Response: {ai_response}, Recording URL: {recording_url}, Recording Duration: {recording_duration} seconds")
-    
-    # Store in Firebase Realtime Database
-    try:
-        ref = db.reference("callResponses")
-        ref.push({
-            "transcription": transcription,
-            "aiResponse": ai_response,
-            "timestamp": pendulum.now("Asia/Kolkata").to_iso8601_string(),
-            "phoneNumber": os.getenv("YOUR_PHONE_NUMBER"),
-            "callSid": call_sid,
-            "recordingSid": recording_sid,
-            "recordingDuration": recording_duration,
-        })
-        logger.info(f"Call SID: {call_sid} | Call summary stored in Firebase")
-    except Exception as e:
-        logger.error(f"Call SID: {call_sid} | Error storing call summary: {e}")
-    
-    twiml = VoiceResponse()
-    twiml.say(ai_response, voice="Polly.Joanna")
-    twiml.hangup()
-    return HTMLResponse(content=str(twiml), media_type="text/xml")
-
-@app.post("/transcription")
-async def transcription(request: Request):
-    """Handle Twilio transcription callback."""
-    form_data = await request.form()
-    call_sid = form_data.get("CallSid", "Unknown call SID")
-    recording_sid = form_data.get("RecordingSid", "Unknown recording SID")
-    transcription_text = form_data.get("TranscriptionText", "No response recorded")
-    
-    logger.info(f"Transcription callback triggered for Call SID: {call_sid} at {pendulum.now('Asia/Kolkata').to_datetime_string()}")
-    logger.info(f"Transcription: {transcription_text}")
-    logger.info(f"Recording SID: {recording_sid}")
-    
-    ai_response = await get_openai_response(transcription_text, call_sid)
-    logger.info(f"*** Call Summary *** Call SID: {call_sid}, Transcription: {transcription_text}, AI Response: {ai_response}")
-    
-    # Store in Firebase Realtime Database
-    try:
-        ref = db.reference("callResponses")
-        ref.push({
-            "transcription": transcription_text,
-            "aiResponse": ai_response,
-            "timestamp": pendulum.now("Asia/Kolkata").to_iso8601_string(),
-            "phoneNumber": os.getenv("YOUR_PHONE_NUMBER"),
-            "callSid": call_sid,
-            "recordingSid": recording_sid,
-        })
-        logger.info(f"Call SID: {call_sid} | Transcription stored in Firebase")
-    except Exception as e:
-        logger.error(f"Call SID: {call_sid} | Error storing transcription: {e}")
-    
-    return {"status": "success"}
-
-if __name__ == "__main__":
-    import uvicorn
-    logger.info(f"Starting FastAPI server at {pendulum.now('Asia/Kolkata').to_datetime_string()}")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+# Removed /incoming-call, /handle-response, and /transcription endpoints as they are replaced by /schedule-call with media stream
