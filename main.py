@@ -180,7 +180,7 @@ async def handle_media_stream(websocket: WebSocket):
                             logger.info("Sent audio to OpenAI")
                         elif data["event"] == "start":
                             stream_sid = data["start"]["streamSid"]
-                            logger.info(f"Incoming stream started: {streamSid}")
+                            logger.info(f"Incoming stream started: {stream_sid}")
                 except WebSocketDisconnect:
                     logger.info("Twilio WebSocket disconnected")
                     if openai_ws.open:
