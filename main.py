@@ -158,11 +158,11 @@ async def media_stream(websocket: WebSocket):
                         data = json.loads(message)
                         logger.info(f"Received from Twilio: {data['event']} | Data: {data}")
                         if data["event"] == "media":
-                            # Send audio to OpenAI using input_audio_buffer.append event
-                            await connection.send(json.dumps({
+                            # Send audio to OpenAI as a dictionary, not a JSON string
+                            await connection.send({
                                 "type": "input_audio_buffer.append",
                                 "audio": data["media"]["payload"]
-                            }))
+                            })
                             logger.info("Sent audio to OpenAI")
                         elif data["event"] == "start":
                             stream_sid = data["start"]["streamSid"]
