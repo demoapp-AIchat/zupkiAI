@@ -150,10 +150,10 @@ async def media_stream(websocket: WebSocket):
             logger.info("OpenAI session initialized")
 
             stream_sid = None
-            response_triggered = False
+            first_audio_received = False
 
             async def receive_from_twilio():
-                nonlocal stream_sid, response_triggered
+                nonlocal stream_sid, first_audio_received
                 try:
                     async for message in websocket.iter_text():
                         data = json.loads(message)
@@ -165,11 +165,18 @@ async def media_stream(websocket: WebSocket):
                                 "audio": data["media"]["payload"]
                             })
                             logger.info("Sent audio to OpenAI")
-                            # Trigger response after first audio chunk
-                            if not response_triggered:
+                            # Initialize conversation and trigger response after first audio chunk
+                            if not first_audio_received:
+                                await connection.conversation.item.create(
+                                    item={
+                                        "type": "message",
+                                        "role": "user",
+                                        "content": [{"type": "input_text", "text": "Please respond to my voice input."}]
+                                    }
+                                )
                                 await connection.response.create()
-                                logger.info("Triggered OpenAI response")
-                                response_triggered = True
+                                logger.info("Initialized conversation and triggered OpenAI response")
+                                first_audio_received = True
                         elif data["event"] == "start":
                             stream_sid = data["start"]["streamSid"]
                             logger.info(f"Incoming stream started: {stream_sid}")
