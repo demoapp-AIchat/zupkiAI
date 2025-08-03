@@ -16,7 +16,7 @@ from twilio.rest import Client
 from openai import AsyncOpenAI
 import pendulum
 import asyncio
-from endpoints.auth import router as auth_router
+endpoints.auth import router as auth_router
 from endpoints.user import router as user_router
 from endpoints.health import router as health_router
 from endpoints.reminders import router as reminders_router
@@ -150,26 +150,26 @@ async def media_stream(websocket: WebSocket):
             logger.info("OpenAI session initialized")
 
             stream_sid = None
-            audio_received = False
+            response_triggered = False
 
             async def receive_from_twilio():
-                nonlocal stream_sid, audio_received
+                nonlocal stream_sid, response_triggered
                 try:
                     async for message in websocket.iter_text():
                         data = json.loads(message)
                         logger.info(f"Received from Twilio: {data['event']} | Data: {data}")
                         if data["event"] == "media":
-                            audio_received = True
                             # Send audio to OpenAI as a dictionary
                             await connection.send({
                                 "type": "input_audio_buffer.append",
                                 "audio": data["media"]["payload"]
                             })
                             logger.info("Sent audio to OpenAI")
-                            # Trigger response after receiving audio
-                            if not await connection.is_response_in_progress():
+                            # Trigger response after first audio chunk
+                            if not response_triggered:
                                 await connection.response.create()
                                 logger.info("Triggered OpenAI response")
+                                response_triggered = True
                         elif data["event"] == "start":
                             stream_sid = data["start"]["streamSid"]
                             logger.info(f"Incoming stream started: {stream_sid}")
