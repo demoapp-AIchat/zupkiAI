@@ -188,3 +188,6 @@ class RefreshRequest(BaseModel):
 
 class PasswordResetRequest(BaseModel):
     email: str
+
+class GetCustomUidRequest(BaseModel):
+    firebase_uid: str

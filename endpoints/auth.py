@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from models import AuthRequest, RefreshRequest, TokenRequest,PasswordResetRequest
+from models import AuthRequest, RefreshRequest, TokenRequest,PasswordResetRequest, GetCustomUidRequest
 from database import get_custom_uid
 from firebase_admin import auth, db
 import requests
@@ -153,3 +153,31 @@ async def forgot_password(req: PasswordResetRequest):
         except Exception as e:
             logger.error(f"Error in forgot-password endpoint: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        
+
+@router.post("/get-custom-uid")
+def get_custom_uid_endpoint(req: GetCustomUidRequest):
+    """Get custom UID for a given Firebase UID."""
+    try:
+        # Verify if the Firebase UID exists
+        try:
+            auth.get_user(req.firebase_uid)
+        except auth.UserNotFoundError:
+            logger.warning(f"User not found for Firebase UID: {req.firebase_uid}")
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Check if custom UID exists in the database
+        custom_uid_ref = db.reference(f"uid_mapping/{req.firebase_uid}")
+        custom_uid_data = custom_uid_ref.get()
+        
+        if custom_uid_data and "custom_uid" in custom_uid_data:
+            custom_uid = custom_uid_data["custom_uid"]
+        else:
+            # Generate new custom UID if it doesn't exist
+            custom_uid = generate_custom_uid()
+            custom_uid_ref.set({"custom_uid": custom_uid})
+            
+        return {"status": "success", "custom_uid": custom_uid}
+    except Exception as e:
+        logger.error(f"Error getting custom UID: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
