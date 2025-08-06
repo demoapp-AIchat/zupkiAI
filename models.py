@@ -40,18 +40,17 @@ class UserDetails(BaseModel):
     name: Optional[str] = None
     address: Optional[str] = None
     phone: Optional[str] = None
-    hobby: Optional[str] = None
+    email: Optional[str] = None
     emergencyContact: Optional[str] = None
     medication: Optional[str] = None
-    dob: Optional[str] = None
-    habbit: Optional[str] = None
-    lang: Optional[str] = None
+    age: Optional[str] = None
+    habbitsToSkip: Optional[str] = None
+    languagePreference: Optional[str] = None
     bloodGroup: Optional[str] = None
     medicalHistory: Optional[str] = None
     relation: Optional[str] = None
     selectedInterests: Optional[List[str]] = None
-    dietaryPreference: Optional[str] = None
-    allergies: Optional[List[str]] = None
+    allergies: Optional[List[str]]=None
 
 class HealthInfo(BaseModel):
     """Model for user health information."""
