@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException
-from models import TokenRequest
+from fastapi import APIRouter, HTTPException,Body
+from models import TokenRequest,AddMultipleTodoTasksRequest,UpdateTodoTaskRequest,UpdateLinkedUserTodoTaskRequest,GetLinkedUserTodoListsRequest
 from database import verify_user_token, fetch_user_data
 from helpers import india_tz, generate_random_time, is_valid_three_word_task, is_reminder_in_period
 from openai import AsyncOpenAI
@@ -10,10 +10,75 @@ import logging
 import json
 import random
 import re
-
+import uuid
 router = APIRouter()
 logger = logging.getLogger(__name__)
+@router.post("/get-linked-user-todo-lists")
+async def get_linked_user_todo_lists(req: GetLinkedUserTodoListsRequest):
+    """
+    Fetch all custom to-do lists for a user that the requester is linked to.
+    """
+    try:
+        custom_uid = verify_user_token(req.idToken)
+        # Require target_uid in the request body
+        if not hasattr(req, "target_uid") or not req.target_uid:
+            raise HTTPException(status_code=400, detail="target_uid is required in the request body.")
+        user_data = fetch_user_data(custom_uid)
+        linked = user_data.get("linked", {})
+        if req.target_uid not in linked:
+            raise HTTPException(status_code=403, detail="You are not linked to this user.")
+        todo_lists_ref = db.reference(f"users/{req.target_uid}/custom_todo_lists")
+        all_lists = todo_lists_ref.get() or {}
+        user_result = []
+        for date, tasks in all_lists.items():
+            if isinstance(tasks, dict):
+                user_result.append({
+                    "date": date,
+                    "tasks": list(tasks.values())
+                })
+        return {
+            "status": "success",
+            "linked_todo_lists": {
+                req.target_uid: user_result
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error in get-linked-user-todo-lists endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+@router.post("/update-linked-user-todo-task")
+async def update_linked_user_todo_task(req: UpdateLinkedUserTodoTaskRequest):
+    """
+    Update any field of a specific to-do task for a user that the requester is linked to.
+    """
+    try:
+        custom_uid = verify_user_token(req.idToken)
+        user_data = fetch_user_data(custom_uid)
+        linked = user_data.get("linked", {})
+        if not linked:
+            raise HTTPException(status_code=403, detail="No linked users found.")
+        # The request must include the target linked user's UID
+        if not hasattr(req, "linked_uid") or not req.linked_uid:
+            raise HTTPException(status_code=400, detail="linked_uid is required in the request body.")
+        if req.linked_uid not in linked:
+            raise HTTPException(status_code=403, detail="You are not linked to this user.")
+        task_ref = db.reference(f"users/{req.linked_uid}/custom_todo_lists/{req.date}/{req.task_id}")
+        task_data = task_ref.get()
+        if not task_data:
+            raise HTTPException(status_code=404, detail="Task not found")
+        # Update all fields except task_id
+        for field in ["title", "description", "status", "created_at_time", "updated_at_time", "completed_at_time", "priority", "time", "recurring"]:
+            value = getattr(req, field, None)
+            if value is not None:
+                task_data[field] = value
+        task_ref.set(task_data)
+        return {
+            "status": "success",
+            "task": task_data
+        }
+    except Exception as e:
+        logger.error(f"Error in update-linked-user-todo-task endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 # Initialize OpenAI client
 openai_api_key = os.getenv("OPENAI_API_KEY")
 if not openai_api_key:
@@ -192,4 +257,167 @@ async def generate_todo(req: TokenRequest):
 
     except Exception as e:
         logger.error(f"Error in generate-todo endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+@router.post("/add-todo-task")
+async def add_todo_task(req: AddMultipleTodoTasksRequest):
+    """Add multiple custom to-do tasks for the user (up to 7)."""
+    try:
+        custom_uid = verify_user_token(req.idToken)
+        if not custom_uid:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        now = datetime.datetime.now(india_tz).isoformat()
+        current_date = datetime.datetime.now(india_tz).date().isoformat()
+
+        if not req.tasks or len(req.tasks) > 7:
+            raise HTTPException(status_code=400, detail="You must provide between 1 and 7 tasks.")
+
+        import calendar
+        saved_tasks = []
+        def get_next_dates_for_weekdays(weekdays, start_date, num_weeks=4):
+            # weekdays: list of strings like ["mon", "tue", "fri"]
+            # start_date: datetime.date
+            # Returns: list of dates for each weekday in the next num_weeks weeks
+            weekday_map = {
+                "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6
+            }
+            weekdays_idx = [weekday_map[d[:3].lower()] for d in weekdays if d[:3].lower() in weekday_map]
+            dates = []
+            for i in range(num_weeks * 7):
+                date = start_date + datetime.timedelta(days=i)
+                if date.weekday() in weekdays_idx:
+                    dates.append(date)
+            return dates
+
+        for task in req.tasks:
+            if task.recurring:
+                recurring_group_id = str(uuid.uuid4())
+                recurring_dates = get_next_dates_for_weekdays(task.recurring, datetime.datetime.now(india_tz).date())
+                for date in recurring_dates:
+                    task_id = str(uuid.uuid4())
+                    task_data = {
+                        "title": task.title,
+                        "description": task.description,
+                        "status": task.status or "pending",
+                        "created_at_time": task.created_at_time or now,
+                        "updated_at_time": task.updated_at_time or now,
+                        "completed_at_time": task.completed_at_time,
+                        "priority": task.priority or "medium",
+                        "task_id": task_id,
+                        "time": task.time,
+                        "recurring": task.recurring,
+                        "recurring_group_id": recurring_group_id
+                    }
+                    todo_ref = db.reference(f"users/{custom_uid}/custom_todo_lists/{date.isoformat()}/{task_id}")
+                    todo_ref.set(task_data)
+                    saved_tasks.append(task_data)
+            else:
+                task_id = task.task_id or str(uuid.uuid4())
+                task_data = {
+                    "title": task.title,
+                    "description": task.description,
+                    "status": task.status or "pending",
+                    "created_at_time": task.created_at_time or now,
+                    "updated_at_time": task.updated_at_time or now,
+                    "completed_at_time": task.completed_at_time,
+                    "priority": task.priority or "medium",
+                    "task_id": task_id,
+                    "time": task.time,
+                    "recurring": task.recurring if hasattr(task, 'recurring') else None
+                }
+                todo_ref = db.reference(f"users/{custom_uid}/custom_todo_lists/{current_date}/{task_id}")
+                todo_ref.set(task_data)
+                saved_tasks.append(task_data)
+
+        return {
+            "status": "success",
+            "tasks": saved_tasks
+        }
+    except Exception as e:
+        logger.error(f"Error in add-todo-task endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    from fastapi import Body
+
+@router.post("/get-all-todo-lists")
+async def get_all_todo_lists(req: TokenRequest = Body(...)):
+    """
+    Fetch all custom to-do lists for the user (all dates).
+    """
+    try:
+        custom_uid = verify_user_token(req.idToken)
+        if not custom_uid:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
+        all_lists = todo_lists_ref.get() or {}
+
+        # Format: [{ "date": date, "tasks": [ ... ] }, ...]
+        result = []
+        for date, tasks in all_lists.items():
+            if isinstance(tasks, dict):
+                result.append({
+                    "date": date,
+                    "tasks": list(tasks.values())
+                })
+
+        return {
+            "status": "success",
+            "todo_lists": result
+        }
+    except Exception as e:
+        logger.error(f"Error in get-all-todo-lists endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+@router.post("/update-todo-task")
+async def update_todo_task(req: UpdateTodoTaskRequest):
+    """
+    Update any field of a specific to-do task except task_id.
+    """
+    try:
+        custom_uid = verify_user_token(req.idToken)
+        if not custom_uid:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        task_ref = db.reference(f"users/{custom_uid}/custom_todo_lists/{req.date}/{req.task_id}")
+        task_data = task_ref.get()
+        if not task_data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        # Update all fields except task_id
+        for field in ["title", "description", "status", "created_at_time", "updated_at_time", "completed_at_time", "priority", "time", "recurring"]:
+            value = getattr(req, field, None)
+            if value is not None:
+                task_data[field] = value
+
+        task_ref.set(task_data)
+
+        return {
+            "status": "success",
+            "task": task_data
+        }
+    except Exception as e:
+        logger.error(f"Error in update-todo-task endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+@router.post("/delete-todo-task")
+async def delete_todo_task(req: UpdateTodoTaskRequest):
+    """
+    Delete a specific to-do task for the user by date and task_id.
+    """
+    try:
+        custom_uid = verify_user_token(req.idToken)
+        if not custom_uid:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        task_ref = db.reference(f"users/{custom_uid}/custom_todo_lists/{req.date}/{req.task_id}")
+        task_data = task_ref.get()
+        if not task_data:
+            raise HTTPException(status_code=404, detail="Task not found")
+
+        task_ref.delete()
+
+        return {
+            "status": "success",
+            "message": f"Task {req.task_id} deleted successfully."
+        }
+    except Exception as e:
+        logger.error(f"Error in delete-todo-task endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")

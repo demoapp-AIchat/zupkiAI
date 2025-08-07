@@ -1,3 +1,21 @@
+class GetLinkedUserTodoListsRequest(BaseModel):
+    idToken: str
+    target_uid: str
+
+class UpdateLinkedUserTodoTaskRequest(BaseModel):
+    idToken: str
+    linked_uid: str
+    date: str
+    task_id: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    time: Optional[str] = None
+    created_at_time: Optional[str] = None
+    updated_at_time: Optional[str] = None
+    completed_at_time: Optional[str] = None
+    priority: Optional[str] = None
+    recurring: Optional[list] = None
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 
@@ -106,6 +124,22 @@ class MedicineReminder(BaseModel):
     set_refill_date: Optional[str] = None
     set_day_before_refill: Optional[str] = None
 
+class TodoTask(BaseModel):
+    title: str
+    description: Optional[str] = None
+    status: Optional[str] = "pending"
+    created_at_time: Optional[str] = None
+    updated_at_time: Optional[str] = None
+    completed_at_time: Optional[str] = None
+    time: Optional[str] = None
+    priority: Optional[str] = "medium"
+    task_id: Optional[str] = None
+    recurring: Optional[List[str]] = None  # e.g., ["sun", "mon", "tue"]
+
+class AddMultipleTodoTasksRequest(BaseModel):
+    idToken: str
+    tasks: List[TodoTask]
+
 class DeleteHealthTrackRequest(BaseModel):
     """Model for deleting health track data."""
     idToken: str
@@ -141,10 +175,10 @@ class ChatResponse(BaseModel):
     response: str
     chat_history: List[Dict[str, str]]
 
-class HandleParentRequest(BaseModel):
-    """Model for handling parent link request."""
+class HandleRequest(BaseModel):
+    """Model for handling  link request."""
     idToken: str
-    parent_id: str
+    user_id: str
     action: str  # "allow" or "decline"
 
 class MedicineTrack(BaseModel):
@@ -190,3 +224,17 @@ class PasswordResetRequest(BaseModel):
 
 class GetCustomUidRequest(BaseModel):
     firebase_uid: str
+
+class UpdateTodoTaskRequest(BaseModel):
+    idToken: str
+    date: str
+    task_id: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    time: Optional[str] = None
+    created_at_time: Optional[str] = None
+    updated_at_time: Optional[str] = None
+    completed_at_time: Optional[str] = None
+    priority: Optional[str] = None
+    recurring: Optional[List[str]] = None  # e.g., ["sun", "mon", "tue"]

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from models import UserDetails, TokenRequest, SearchChildRequest, LinkChildRequest, HandleParentRequest, DeleteRequest, FetchLinkedChildrenRequest, CheckLinkStatusRequest, AccountTypeRequest
+from models import UserDetails, TokenRequest, SearchChildRequest, LinkChildRequest, HandleRequest, DeleteRequest, FetchLinkedChildrenRequest, CheckLinkStatusRequest, AccountTypeRequest
 from database import verify_user_token, fetch_user_data
 from firebase_admin import db
 import logging
@@ -19,7 +19,10 @@ def save_user_details(req: UserDetails):
         return {"status": "success", "message": "User details saved successfully"}
     except Exception as e:
         logger.error(f"Error saving user details: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
+        error_message = str(e)
+        if hasattr(e, 'detail'):
+            error_message = getattr(e, 'detail', error_message)
+        raise HTTPException(status_code=401, detail={"error": "Failed to save user details", "details": error_message})
 
 @router.post("/user-detail")
 def fetch_user_details(req: TokenRequest):
@@ -37,7 +40,10 @@ def fetch_user_details(req: TokenRequest):
         return {"status": "success", "data": response_data}
     except Exception as e:
         logger.error(f"Error fetching user details: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
+        error_message = str(e)
+        if hasattr(e, 'detail'):
+            error_message = getattr(e, 'detail', error_message)
+        raise HTTPException(status_code=401, detail={"error": "Failed to fetch user details", "details": error_message})
     
     
 @router.post("/search-child")
@@ -46,7 +52,7 @@ def search_child(req: SearchChildRequest):
     try:
         child_ref = db.reference(f"users/{req.child_id}")
         child_data = child_ref.get()
-        if not child_data or child_data.get("user_details", {}).get("account_type") != "child":
+        if not child_data or child_data.get("user_details", {}):
             raise HTTPException(status_code=404, detail="Child ID not found or not a child account")
         child_details = child_data.get("user_details", {})
         search_result = {
@@ -56,149 +62,177 @@ def search_child(req: SearchChildRequest):
         return {"status": "success", "data": search_result}
     except Exception as e:
         logger.error(f"Error searching child: {str(e)}")
-        raise HTTPException(status_code=400, detail=str(e))
+        error_message = str(e)
+        if hasattr(e, 'detail'):
+            error_message = getattr(e, 'detail', error_message)
+        raise HTTPException(status_code=400, detail={"error": "Failed to search user", "details": error_message})
  
-@router.post("/request-child-link")
+@router.post("/request-uid-link")
 def request_child_link(req: LinkChildRequest):
     """Send a link request from a parent to a child."""
     try:
-        parent_uid = verify_user_token(req.idToken)
-        parent_ref = db.reference(f"users/{parent_uid}")
-        parent_data = parent_ref.get()
-        if not parent_data or parent_data.get("user_details", {}).get("account_type") != "family":
-            raise HTTPException(status_code=403, detail="Only family accounts can request to link children")
-        child_ref = db.reference(f"users/{req.child_id}")
-        child_data = child_ref.get()
-        if not child_data or child_data.get("user_details", {}).get("account_type") != "child":
-            raise HTTPException(status_code=404, detail="Child ID not found or not a child account")
-        if parent_uid in child_data.get("parents", {}):
-            raise HTTPException(status_code=400, detail="Already linked as parent")
-        if parent_uid in child_data.get("pending_parent_requests", {}):
+        sender_uid = verify_user_token(req.idToken)
+        sender_ref = db.reference(f"users/{sender_uid}")
+        sender_data = sender_ref.get()
+        receiver_ref = db.reference(f"users/{req.child_id}")
+        receiver_data = receiver_ref.get()
+        if not sender_data:
+            raise HTTPException(status_code=404, detail="Sender UID not found")
+        if not receiver_data:
+            raise HTTPException(status_code=404, detail="Receiver UID not found")
+        # Prevent duplicate requests
+        if sender_uid in receiver_data.get("pending_link_requests", {}):
             raise HTTPException(status_code=400, detail="Request already sent")
-        child_ref.child(f"pending_parent_requests/{parent_uid}").set({
-            "name": parent_data.get("user_details", {}).get("name", ""),
-            "email": parent_data.get("user_details", {}).get("email", ""),
+        # Save request in receiver's pending_link_requests
+        receiver_ref.child(f"pending_link_requests/{sender_uid}").set({
+            "name": sender_data.get("user_details", {}).get("name", ""),
+            "email": sender_data.get("user_details", {}).get("email", ""),
             "status": "pending",
             "timestamp": datetime.datetime.now().isoformat()
         })
-        parent_ref.child(f"sent_requests/{req.child_id}").set({
-            "name": child_data.get("user_details", {}).get("name", ""),
-            "email": child_data.get("user_details", {}).get("email", ""),
+        # Save request in sender's sent_link_requests
+        sender_ref.child(f"sent_link_requests/{req.child_id}").set({
+            "name": receiver_data.get("user_details", {}).get("name", ""),
+            "email": receiver_data.get("user_details", {}).get("email", ""),
             "status": "pending",
             "timestamp": datetime.datetime.now().isoformat()
         })
-        return {"status": "success", "message": f"Link request sent to child {req.child_id}"}
+        return {"status": "success", "message": f"Link request sent to UID {req.child_id}"}
     except Exception as e:
-        logger.error(f"Error requesting child link: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
+        logger.error(f"Error requesting link: {str(e)}")
+        error_message = str(e)
+        if hasattr(e, 'detail'):
+            error_message = getattr(e, 'detail', error_message)
+        raise HTTPException(status_code=401, detail={"error": "Failed to request link", "details": error_message})
 
 @router.post("/fetch-pending-requests")
 def fetch_pending_requests(req: TokenRequest):
     """Fetch pending parent requests for a child."""
     try:
-        child_uid = verify_user_token(req.idToken)
-        user_ref = db.reference(f"users/{child_uid}")
+        uid = verify_user_token(req.idToken)
+        user_ref = db.reference(f"users/{uid}")
         user_data = user_ref.get()
-        if not user_data or user_data.get("user_details", {}).get("account_type") != "child":
-            raise HTTPException(status_code=403, detail="Only child accounts can fetch pending requests")
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found")
 
-        pending_requests = user_data.get("pending_parent_requests", {})
+        pending_requests = user_data.get("pending_link_requests", {})
         return {"status": "success", "data": pending_requests}
     except Exception as e:
         logger.error(f"Error fetching pending requests: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
+        error_message = str(e)
+        if hasattr(e, 'detail'):
+            error_message = getattr(e, 'detail', error_message)
+        raise HTTPException(status_code=401, detail={"error": "Failed to fetch pending requests", "details": error_message})
 
-@router.post("/handle-parent-request")
-def handle_parent_request(req: HandleParentRequest):
-    """Handle a parent link request (approve or decline)."""
+@router.post("/handle-request")
+def handle_request(req: HandleRequest):
+    """Handle a  link request (approve or decline)."""
     try:
-        child_uid = verify_user_token(req.idToken)
-        child_ref = db.reference(f"users/{child_uid}")
-        child_data = child_ref.get()
-        if not child_data or child_data.get("user_details", {}).get("account_type") != "child":
-            raise HTTPException(status_code=403, detail="Only child accounts can handle parent requests")
-        if req.parent_id not in child_data.get("pending_parent_requests", {}):
-            raise HTTPException(status_code=404, detail="Parent request not found")
-        parent_ref = db.reference(f"users/{req.parent_id}")
-        parent_data = parent_ref.get()
-        if not parent_data:
-            raise HTTPException(status_code=404, detail="Parent not found")
+        receiver_uid = verify_user_token(req.idToken)
+        receiver_ref = db.reference(f"users/{receiver_uid}")
+        receiver_data = receiver_ref.get()
+        if not receiver_data:
+            raise HTTPException(status_code=404, detail="Receiver not found")
+        # Check if sender_id exists in receiver's pending_link_requests
+        if req.user_id not in receiver_data.get("pending_link_requests", {}):
+            raise HTTPException(status_code=404, detail="Request not found")
+        sender_ref = db.reference(f"users/{req.user_id}")
+        sender_data = sender_ref.get()
+        if not sender_data:
+            raise HTTPException(status_code=404, detail="Sender not found")
         if req.action.lower() == "allow":
-            child_ref.child(f"parents/{req.parent_id}").set(True)
-            parent_ref.child(f"children/{child_uid}").set(True)
-            child_ref.child(f"pending_parent_requests/{req.parent_id}/status").set("approved")
-            parent_ref.child(f"sent_requests/{child_uid}/status").set("approved")
-            return {"status": "success", "message": "Parent approved successfully"}
+            # Mark as linked for both users
+            receiver_ref.child(f"linked/{req.user_id}").set(True)
+            sender_ref.child(f"linked/{receiver_uid}").set(True)
+            receiver_ref.child(f"pending_link_requests/{req.user_id}/status").set("approved")
+            sender_ref.child(f"sent_link_requests/{receiver_uid}/status").set("approved")
+            return {"status": "success", "message": "Link request approved successfully"}
         elif req.action.lower() == "decline":
-            child_ref.child(f"pending_parent_requests/{req.parent_id}/status").set("declined")
-            parent_ref.child(f"sent_requests/{child_uid}/status").set("declined")
-            return {"status": "success", "message": "Parent request declined"}
+            receiver_ref.child(f"pending_link_requests/{req.user_id}/status").set("declined")
+            sender_ref.child(f"sent_link_requests/{receiver_uid}/status").set("declined")
+            return {"status": "success", "message": "Link request declined"}
         else:
             raise HTTPException(status_code=400, detail="Invalid action")
     except Exception as e:
-        logger.error(f"Error handling parent request: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
+        logger.error(f"Error handling link request: {str(e)}")
+        error_message = str(e)
+        if hasattr(e, 'detail'):
+            error_message = getattr(e, 'detail', error_message)
+        raise HTTPException(status_code=401, detail={"error": "Failed to handle link request", "details": error_message})
 
-@router.post("/fetch-child-details")
+@router.post("/fetch-user-details")
 def fetch_child_details(req: TokenRequest):
     """Fetch details of all linked children for a parent."""
     try:
-        parent_uid = verify_user_token(req.idToken)
-        parent_ref = db.reference(f"users/{parent_uid}")
-        parent_data = parent_ref.get()
-        if not parent_data or parent_data.get("user_details", {}).get("account_type") != "family":
-            raise HTTPException(status_code=403, detail="Only family accounts can fetch child details")
-
-        children = parent_data.get("children", {})
+        uid = verify_user_token(req.idToken)
+        user_ref = db.reference(f"users/{uid}")
+        user_data = user_ref.get()
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found")
+        linked = user_data.get("linked", {})
         result = {}
-        for child_id in children:
-            child_ref = db.reference(f"users/{child_id}")
-            child_data = child_ref.get()
-            result[child_id] = {
-                "user_details": child_data.get("user_details", {}),
-                "health_info": child_data.get("health_info", {}),
-                "health_track": child_data.get("health_track", {})
+        for linked_uid in linked:
+            linked_ref = db.reference(f"users/{linked_uid}")
+            linked_data = linked_ref.get()
+            result[linked_uid] = {
+                "user_details": linked_data.get("user_details", {}),
+                "health_info": linked_data.get("health_info", {}),
+                "health_track": linked_data.get("health_track", {})
             }
         return {"status": "success", "data": result}
     except Exception as e:
-        logger.error(f"Error fetching child details: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
+        logger.error(f"Error fetching linked user details: {str(e)}")
+        error_message = str(e)
+        if hasattr(e, 'detail'):
+            error_message = getattr(e, 'detail', error_message)
+        raise HTTPException(status_code=401, detail={"error": "Failed to fetch linked user details", "details": error_message})
 
-@router.post("/fetch-parent-requests")
+@router.post("/fetch-user-requests")
 def fetch_parent_requests(req: TokenRequest):
-    """Fetch sent requests for a parent."""
+    """Fetch sent requests for a user."""
     try:
-        parent_uid = verify_user_token(req.idToken)
-        ref = db.reference(f"users/{parent_uid}/sent_requests")
+        uid = verify_user_token(req.idToken)
+        ref = db.reference(f"users/{uid}/sent_link_requests")
         return {"status": "success", "data": ref.get() or {}}
     except Exception as e:
-        logger.error(f"Error fetching parent requests: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
+        logger.error(f"Error fetching sent requests: {str(e)}")
+        error_message = str(e)
+        if hasattr(e, 'detail'):
+            error_message = getattr(e, 'detail', error_message)
+        raise HTTPException(status_code=401, detail={"error": "Failed to fetch sent requests", "details": error_message})
 
 @router.post("/delete-request")
 def delete_request(req: DeleteRequest):
     """Delete a pending link request from both sides."""
     try:
-        child_uid = verify_user_token(req.idToken)
-        db.reference(f"users/{child_uid}/pending_parent_requests/{req.target_id}").delete()
-        db.reference(f"users/{req.target_id}/sent_requests/{child_uid}").delete()
+        uid = verify_user_token(req.idToken)
+        db.reference(f"users/{uid}/pending_link_requests/{req.target_id}").delete()
+        db.reference(f"users/{req.target_id}/sent_link_requests/{uid}").delete()
         return {"status": "success", "message": "Request deleted from both sides"}
     except Exception as e:
         logger.error(f"Error deleting request: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
+        error_message = str(e)
+        if hasattr(e, 'detail'):
+            error_message = getattr(e, 'detail', error_message)
+        raise HTTPException(status_code=401, detail={"error": "Failed to delete request", "details": error_message})
 
-@router.post("/linked-children")
+@router.post("/linked-user")
 def linked_children(req: FetchLinkedChildrenRequest):
-    """Fetch list of linked children for a parent."""
+    """Fetch list of linked user."""
     try:
-        parent_data = fetch_user_data(req.parent_id)
-        if parent_data.get("user_details", {}).get("account_type") != "family":
-            raise HTTPException(status_code=403, detail="Invalid parent")
-        children = parent_data.get("children", {})
-        return {"status": "success", "children": list(children.keys())}
+        uid = verify_user_token(req.idToken)
+        user_ref = db.reference(f"users/{uid}")
+        user_data = user_ref.get()
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found")
+        linked = user_data.get("linked", {})
+        return {"status": "success", "linked_uids": list(linked.keys())}
     except Exception as e:
-        logger.error(f"Error fetching linked children: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
+        logger.error(f"Error fetching linked uids: {str(e)}")
+        error_message = str(e)
+        if hasattr(e, 'detail'):
+            error_message = getattr(e, 'detail', error_message)
+        raise HTTPException(status_code=401, detail={"error": "Failed to fetch linked users", "details": error_message})
 
 @router.post("/check-link-status")
 def check_link_status(req: CheckLinkStatusRequest):
@@ -210,70 +244,37 @@ def check_link_status(req: CheckLinkStatusRequest):
         return {"status": "success", "link_status": status or "not_requested"}
     except Exception as e:
         logger.error(f"Error checking link status: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
+        error_message = str(e)
+        if hasattr(e, 'detail'):
+            error_message = getattr(e, 'detail', error_message)
+        raise HTTPException(status_code=401, detail={"error": "Failed to check link status", "details": error_message})
 @router.post("/unlink-child")
 def unlink_child(req: DeleteRequest):
-    """Remove a child from a parent's linked children and delete all related links."""
+    """Unlink any user from the authenticated user's linked list and delete all related links."""
     try:
-        parent_uid = verify_user_token(req.idToken)
-        parent_ref = db.reference(f"users/{parent_uid}")
-        parent_data = parent_ref.get()
-        if not parent_data or parent_data.get("user_details", {}).get("account_type") != "family":
-            raise HTTPException(status_code=403, detail="Only family accounts can unlink children")
-        
-        child_ref = db.reference(f"users/{req.target_id}")
-        child_data = child_ref.get()
-        if not child_data or child_data.get("user_details", {}).get("account_type") != "child":
-            raise HTTPException(status_code=404, detail="Child ID not found or not a child account")
-        
-        if req.target_id not in parent_data.get("children", {}):
-            raise HTTPException(status_code=400, detail="Child is not linked to this parent")
-        
-        # Remove child from parent's children
-        parent_ref.child(f"children/{req.target_id}").delete()
-        
-        # Remove parent from child's parents
-        child_ref.child(f"parents/{parent_uid}").delete()
-        
+        uid = verify_user_token(req.idToken)
+        user_ref = db.reference(f"users/{uid}")
+        target_ref = db.reference(f"users/{req.target_id}")
+        user_data = user_ref.get()
+        target_data = target_ref.get()
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found")
+        if not target_data:
+            raise HTTPException(status_code=404, detail="Target user not found")
+        # Remove link from both users
+        user_ref.child(f"linked/{req.target_id}").delete()
+        target_ref.child(f"linked/{uid}").delete()
         # Remove any pending or sent requests
-        parent_ref.child(f"sent_requests/{req.target_id}").delete()
-        child_ref.child(f"pending_parent_requests/{parent_uid}").delete()
-        
-        logger.info(f"Unlinked child {req.target_id} from parent {parent_uid}")
-        return {"status": "success", "message": f"Child {req.target_id} unlinked successfully"}
-    
+        user_ref.child(f"sent_link_requests/{req.target_id}").delete()
+        target_ref.child(f"pending_link_requests/{uid}").delete()
+        logger.info(f"Unlinked user {req.target_id} from user {uid}")
+        return {"status": "success", "message": f"User {req.target_id} unlinked successfully"}
     except Exception as e:
-        logger.error(f"Error unlinking child: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
-
-@router.post("/accounttype")
-def save_account_type(req: AccountTypeRequest):
-    """Save or update the account type for a user."""
-    try:
-        custom_uid = verify_user_token(req.idToken)
-        user_ref = db.reference(f"users/{custom_uid}")
-        # Check if user_details exists
-        user_data = user_ref.child("user_details").get() or {}
-        # Save or update account_type
-        user_ref.child("user_details/account_type").set(req.account_type)
-        return {"status": "success", "message": "Account type saved successfully"}
-    except Exception as e:
-        logger.error(f"Error saving account type: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
-
-@router.post("/fetch-accounttype")
-def fetch_account_type(req: TokenRequest):
-    """Fetch the account type for a user."""
-    try:
-        custom_uid = verify_user_token(req.idToken)
-        user_ref = db.reference(f"users/{custom_uid}")
-        user_details = user_ref.child("user_details").get()
-        if not user_details or "account_type" not in user_details:
-            raise HTTPException(status_code=404, detail="Account type not found")
-        return {"status": "success", "account_type": user_details["account_type"]}
-    except Exception as e:
-        logger.error(f"Error fetching account type: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
+        logger.error(f"Error unlinking user: {str(e)}")
+        error_message = str(e)
+        if hasattr(e, 'detail'):
+            error_message = getattr(e, 'detail', error_message)
+        raise HTTPException(status_code=401, detail={"error": "Failed to unlink user", "details": error_message})
 
 @router.post("/update-user-details")
 def update_user_details(req: UserDetails):
@@ -294,4 +295,7 @@ def update_user_details(req: UserDetails):
         return {"status": "success", "message": "User details updated successfully"}
     except Exception as e:
         logger.error(f"Error updating user details: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
+        error_message = str(e)
+        if hasattr(e, 'detail'):
+            error_message = getattr(e, 'detail', error_message)
+        raise HTTPException(status_code=401, detail={"error": "Failed to update user details", "details": error_message})
