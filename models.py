@@ -1,21 +1,4 @@
-class GetLinkedUserTodoListsRequest(BaseModel):
-    idToken: str
-    target_uid: str
 
-class UpdateLinkedUserTodoTaskRequest(BaseModel):
-    idToken: str
-    linked_uid: str
-    date: str
-    task_id: str
-    title: Optional[str] = None
-    description: Optional[str] = None
-    status: Optional[str] = None
-    time: Optional[str] = None
-    created_at_time: Optional[str] = None
-    updated_at_time: Optional[str] = None
-    completed_at_time: Optional[str] = None
-    priority: Optional[str] = None
-    recurring: Optional[list] = None
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 
@@ -224,7 +207,25 @@ class PasswordResetRequest(BaseModel):
 
 class GetCustomUidRequest(BaseModel):
     firebase_uid: str
+    
+class GetLinkedUserTodoListsRequest(BaseModel):
+    idToken: str
+    target_uid: str
 
+class UpdateLinkedUserTodoTaskRequest(BaseModel):
+    idToken: str
+    linked_uid: str
+    date: str
+    task_id: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    status: Optional[str] = None
+    time: Optional[str] = None
+    created_at_time: Optional[str] = None
+    updated_at_time: Optional[str] = None
+    completed_at_time: Optional[str] = None
+    priority: Optional[str] = None
+    recurring: Optional[list] = None
 class UpdateTodoTaskRequest(BaseModel):
     idToken: str
     date: str

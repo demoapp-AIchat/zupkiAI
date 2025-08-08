@@ -46,9 +46,9 @@ def fetch_user_details(req: TokenRequest):
         raise HTTPException(status_code=401, detail={"error": "Failed to fetch user details", "details": error_message})
     
     
-@router.post("/search-child")
+@router.post("/search-user")
 def search_child(req: SearchChildRequest):
-    """Search for a child by ID."""
+    """Search for user by ID."""
     try:
         child_ref = db.reference(f"users/{req.child_id}")
         child_data = child_ref.get()
