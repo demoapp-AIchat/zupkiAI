@@ -421,3 +421,215 @@ async def delete_todo_task(req: UpdateTodoTaskRequest):
     except Exception as e:
         logger.error(f"Error in delete-todo-task endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+@router.post("/get-upcoming-todo-tasks")
+async def get_upcoming_todo_tasks(req: TokenRequest):
+    """
+    Fetch all to-do tasks for the user for today and future dates.
+    """
+    try:
+        custom_uid = verify_user_token(req.idToken)
+        if not custom_uid:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
+        all_lists = todo_lists_ref.get() or {}
+
+        current_date = datetime.datetime.now(india_tz).date().isoformat()
+        result = []
+
+        for date, tasks in all_lists.items():
+            # Include tasks from today and future dates
+            if isinstance(tasks, dict) and date >= current_date:
+                result.append({
+                    "date": date,
+                    "tasks": list(tasks.values())
+                })
+
+        # Sort by date for chronological order
+        result.sort(key=lambda x: x["date"])
+
+        return {
+            "status": "success",
+            "todo_lists": result
+        }
+    except Exception as e:
+        logger.error(f"Error in get-upcoming-todo-tasks endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@router.post("/get-completed-todo-tasks")
+async def get_completed_todo_tasks(req: TokenRequest):
+    """
+    Fetch all completed to-do tasks for the user.
+    """
+    try:
+        custom_uid = verify_user_token(req.idToken)
+        if not custom_uid:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
+        all_lists = todo_lists_ref.get() or {}
+
+        result = []
+        for date, tasks in all_lists.items():
+            if isinstance(tasks, dict):
+                completed_tasks = [task for task in tasks.values() if task.get("status") == "completed"]
+                if completed_tasks:
+                    result.append({
+                        "date": date,
+                        "tasks": completed_tasks
+                    })
+
+        # Sort by date for chronological order
+        result.sort(key=lambda x: x["date"])
+
+        return {
+            "status": "success",
+            "todo_lists": result
+        }
+    except Exception as e:
+        logger.error(f"Error in get-completed-todo-tasks endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@router.post("/get-missed-todo-tasks")
+async def get_missed_todo_tasks(req: TokenRequest):
+    """
+    Fetch all missed to-do tasks for the user (tasks before today that are not completed).
+    """
+    try:
+        custom_uid = verify_user_token(req.idToken)
+        if not custom_uid:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
+        all_lists = todo_lists_ref.get() or {}
+
+        current_date = datetime.datetime.now(india_tz).date().isoformat()
+        result = []
+
+        for date, tasks in all_lists.items():
+            # Consider tasks from past dates only
+            if isinstance(tasks, dict) and date < current_date:
+                # Missed tasks are those not marked as completed
+                missed_tasks = [task for task in tasks.values() if task.get("status") != "completed"]
+                if missed_tasks:
+                    result.append({
+                        "date": date,
+                        "tasks": missed_tasks
+                    })
+
+        # Sort by date for chronological order
+        result.sort(key=lambda x: x["date"])
+
+        return {
+            "status": "success",
+            "todo_lists": result
+        }
+    except Exception as e:
+        logger.error(f"Error in get-missed-todo-tasks endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+@router.post("/get-upcoming-todo-tasks")
+async def get_upcoming_todo_tasks(req: TokenRequest):
+    """
+    Fetch all to-do tasks for the user for today and future dates.
+    """
+    try:
+        custom_uid = verify_user_token(req.idToken)
+        if not custom_uid:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
+        all_lists = todo_lists_ref.get() or {}
+
+        current_date = datetime.datetime.now(india_tz).date().isoformat()
+        result = []
+
+        for date, tasks in all_lists.items():
+            # Include tasks from today and future dates
+            if isinstance(tasks, dict) and date >= current_date:
+                result.append({
+                    "date": date,
+                    "tasks": list(tasks.values())
+                })
+
+        # Sort by date for chronological order
+        result.sort(key=lambda x: x["date"])
+
+        return {
+            "status": "success",
+            "todo_lists": result
+        }
+    except Exception as e:
+        logger.error(f"Error in get-upcoming-todo-tasks endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@router.post("/get-completed-todo-tasks")
+async def get_completed_todo_tasks(req: TokenRequest):
+    """
+    Fetch all completed to-do tasks for the user.
+    """
+    try:
+        custom_uid = verify_user_token(req.idToken)
+        if not custom_uid:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
+        all_lists = todo_lists_ref.get() or {}
+
+        result = []
+        for date, tasks in all_lists.items():
+            if isinstance(tasks, dict):
+                completed_tasks = [task for task in tasks.values() if task.get("status") == "completed"]
+                if completed_tasks:
+                    result.append({
+                        "date": date,
+                        "tasks": completed_tasks
+                    })
+
+        # Sort by date for chronological order
+        result.sort(key=lambda x: x["date"])
+
+        return {
+            "status": "success",
+            "todo_lists": result
+        }
+    except Exception as e:
+        logger.error(f"Error in get-completed-todo-tasks endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@router.post("/get-missed-todo-tasks")
+async def get_missed_todo_tasks(req: TokenRequest):
+    """
+    Fetch all missed to-do tasks for the user (tasks before today that are not completed).
+    """
+    try:
+        custom_uid = verify_user_token(req.idToken)
+        if not custom_uid:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
+        all_lists = todo_lists_ref.get() or {}
+
+        current_date = datetime.datetime.now(india_tz).date().isoformat()
+        result = []
+
+        for date, tasks in all_lists.items():
+            # Consider tasks from past dates only
+            if isinstance(tasks, dict) and date < current_date:
+                # Missed tasks are those not marked as completed
+                missed_tasks = [task for task in tasks.values() if task.get("status") != "completed"]
+                if missed_tasks:
+                    result.append({
+                        "date": date,
+                        "tasks": missed_tasks
+                    })
+
+        # Sort by date for chronological order
+        result.sort(key=lambda x: x["date"])
+
+        return {
+            "status": "success",
+            "todo_lists": result
+        }
+    except Exception as e:
+        logger.error(f"Error in get-missed-todo-tasks endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
