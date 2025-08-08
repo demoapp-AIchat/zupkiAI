@@ -145,12 +145,12 @@ class PushTokenRequest(BaseModel):
 
 class SearchChildRequest(BaseModel):
     """Model for searching a child by ID."""
-    child_id: str
+    target_id: str
 
 class LinkChildRequest(BaseModel):
     """Model for linking a child to a parent."""
     idToken: str
-    child_id: str
+    target_id: str
 
 class ChatResponse(BaseModel):
     """Model for chat response."""
@@ -161,7 +161,7 @@ class ChatResponse(BaseModel):
 class HandleRequest(BaseModel):
     """Model for handling  link request."""
     idToken: str
-    user_id: str
+    target_id: str
     action: str  # "allow" or "decline"
 
 class MedicineTrack(BaseModel):
@@ -172,7 +172,7 @@ class MedicineTrack(BaseModel):
 class CheckLinkStatusRequest(BaseModel):
     """Model for checking link status."""
     idToken: str
-    child_id: str
+    target_id: str
 
 class HealthMetricTrack(BaseModel):
     """Model for health metric tracking data."""
@@ -196,7 +196,7 @@ class DeleteRequest(BaseModel):
 
 class FetchLinkedChildrenRequest(BaseModel):
     """Model for fetching linked children."""
-    parent_id: str
+    target_id: str
 
 class RefreshRequest(BaseModel):
     """Model for refreshing authentication token."""
@@ -207,7 +207,7 @@ class PasswordResetRequest(BaseModel):
 
 class GetCustomUidRequest(BaseModel):
     firebase_uid: str
-    
+
 class GetLinkedUserTodoListsRequest(BaseModel):
     idToken: str
     target_uid: str

@@ -50,7 +50,7 @@ def fetch_user_details(req: TokenRequest):
 def search_child(req: SearchChildRequest):
     """Search for user by ID."""
     try:
-        child_ref = db.reference(f"users/{req.child_id}")
+        child_ref = db.reference(f"users/{req.target_id}")
         child_data = child_ref.get()
         
         # Check if user exists
@@ -87,7 +87,7 @@ def request_child_link(req: LinkChildRequest):
         sender_uid = verify_user_token(req.idToken)
         sender_ref = db.reference(f"users/{sender_uid}")
         sender_data = sender_ref.get()
-        receiver_ref = db.reference(f"users/{req.child_id}")
+        receiver_ref = db.reference(f"users/{req.target_id}")
         receiver_data = receiver_ref.get()
         if not sender_data:
             raise HTTPException(status_code=404, detail="Sender UID not found")
@@ -104,13 +104,13 @@ def request_child_link(req: LinkChildRequest):
             "timestamp": datetime.datetime.now().isoformat()
         })
         # Save request in sender's sent_link_requests
-        sender_ref.child(f"sent_link_requests/{req.child_id}").set({
+        sender_ref.child(f"sent_link_requests/{req.target_id}").set({
             "name": receiver_data.get("user_details", {}).get("name", ""),
             "email": receiver_data.get("user_details", {}).get("email", ""),
             "status": "pending",
             "timestamp": datetime.datetime.now().isoformat()
         })
-        return {"status": "success", "message": f"Link request sent to UID {req.child_id}"}
+        return {"status": "success", "message": f"Link request sent to UID {req.target_id}"}
     except Exception as e:
         logger.error(f"Error requesting link: {str(e)}")
         error_message = str(e)
@@ -252,7 +252,7 @@ def check_link_status(req: CheckLinkStatusRequest):
     """Check the status of a link request."""
     try:
         parent_uid = verify_user_token(req.idToken)
-        status_ref = db.reference(f"users/{parent_uid}/sent_requests/{req.child_id}/status")
+        status_ref = db.reference(f"users/{parent_uid}/sent_requests/{req.target_id}/status")
         status = status_ref.get()
         return {"status": "success", "link_status": status or "not_requested"}
     except Exception as e:

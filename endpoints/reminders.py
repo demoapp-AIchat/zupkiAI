@@ -15,7 +15,7 @@ def save_medicine_reminder(req: MedicineReminder):
     try:
         custom_uid = verify_user_token(req.idToken)
         user_data = fetch_user_data(custom_uid)
-        if user_data.get("user_details", {}).get("account_type") != "child":
+        if user_data.get("user_details", {}):
             raise HTTPException(status_code=403, detail="Only child accounts can save reminders")
         user_ref = db.reference(f"users/{custom_uid}")
         reminder_ref = user_ref.child("health_track/medicine_reminders")
@@ -38,7 +38,7 @@ def get_medicine_reminders(req: TokenRequest):
 
         # Check if user is a child
         user_data = user_ref.get()
-        if not user_data or user_data.get("user_details", {}).get("account_type") != "child":
+        if not user_data or user_data.get("user_details", {}):
             raise HTTPException(status_code=403, detail="Only child accounts can save medicines")
         # Reference to medicine reminders node
         reminder_ref = user_ref.child("health_track/medicine_reminders")
@@ -72,7 +72,7 @@ def get_child_medicine_reminders(req: LinkChildRequest):
       
         # Step 2: Check parent account type
         parent_data = db.reference(f"users/{parent_uid}").get()
-        if not parent_data or parent_data.get("user_details", {}).get("account_type") != "family":
+        if not parent_data or parent_data.get("user_details", {}):
             raise HTTPException(status_code=403, detail="Only family accounts can access this")
 
         # Step 3: Check if request was approved
@@ -84,7 +84,7 @@ def get_child_medicine_reminders(req: LinkChildRequest):
         # Step 4: Validate child exists and is a child account
         child_ref = db.reference(f"users/{req.child_id}")
         child_data = child_ref.get()
-        if not child_data or child_data.get("user_details", {}).get("account_type") != "child":
+        if not child_data or child_data.get("user_details", {}):
             raise HTTPException(status_code=404, detail="Child ID not found or not a child account")
 
         # Step 5: Get reminders
@@ -115,7 +115,7 @@ def delete_medicine_reminder(req: DeleteReminderRequest):
         user_data = user_ref.get()
 
         # Ensure user is a child
-        if not user_data or user_data.get("user_details", {}).get("account_type") != "child":
+        if not user_data or user_data.get("user_details", {}):
             raise HTTPException(status_code=403, detail="Only child accounts can delete medicine reminders")
 
         # Reference to medicine reminders
@@ -157,13 +157,13 @@ def get_child_medicine_reminders_with_status(req: LinkChildRequest):
        
         # Step 2: Check parent account type
         parent_data = db.reference(f"users/{parent_uid}").get()
-        if not parent_data or parent_data.get("user_details", {}).get("account_type") != "family":
+        if not parent_data or parent_data.get("user_details", {}):
             raise HTTPException(status_code=403, detail="Only family accounts can access this")
 
         # Step 3: Get child data
         child_ref = db.reference(f"users/{req.child_id}")
         child_data = child_ref.get()
-        if not child_data or child_data.get("user_details", {}).get("account_type") != "child":
+        if not child_data or child_data.get("user_details", {}):
             raise HTTPException(status_code=404, detail="Child not found or not a child account")
 
         # Step 4: Get reminders and responses
@@ -213,7 +213,7 @@ def save_reminder_response(req: ReminderResponseRequest):
         # Step 2: Confirm user is child
         user_ref = db.reference(f"users/{custom_uid}")
         user_data = user_ref.get()
-        if not user_data or user_data.get("user_details", {}).get("account_type") != "child":
+        if not user_data or user_data.get("user_details", {}):
             raise HTTPException(status_code=403, detail="Only child accounts can respond")
 
         # Step 3: Save response under child's record
@@ -262,13 +262,13 @@ def get_medication_adherence_summary(req: LinkChildRequest):
     try:
         parent_uid = verify_user_token(req.idToken)
         parent_data = fetch_user_data(parent_uid)
-        if parent_data.get("user_details", {}).get("account_type") != "family":
+        if parent_data.get("user_details", {}):
             raise HTTPException(status_code=403, detail="Only family accounts can access this")
         link_status = db.reference(f"users/{parent_uid}/sent_requests/{req.child_id}/status").get()
         if link_status != "approved":
             raise HTTPException(status_code=403, detail="Child link not approved")
         child_data = fetch_user_data(req.child_id)
-        if child_data.get("user_details", {}).get("account_type") != "child":
+        if child_data.get("user_details", {}):
             raise HTTPException(status_code=404, detail="Child not found or not a child account")
         reminders = child_data.get("health_track", {}).get("medicine_reminders", {})
         responses = child_data.get("health_track", {}).get("medicine_responses", {})
