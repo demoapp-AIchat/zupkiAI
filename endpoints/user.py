@@ -52,9 +52,22 @@ def search_child(req: SearchChildRequest):
     try:
         child_ref = db.reference(f"users/{req.child_id}")
         child_data = child_ref.get()
-        if not child_data or child_data.get("user_details", {}):
-            raise HTTPException(status_code=404, detail="Child ID not found or not a child account")
+        
+        # Check if user exists
+        if not child_data:
+            raise HTTPException(status_code=404, detail="Child ID not found")
+        
+        # Check if user has user_details (assuming child accounts must have user_details)
         child_details = child_data.get("user_details", {})
+        if not child_details:
+            raise HTTPException(status_code=404, detail="Child account details not found")
+        
+        # Optionally, add logic to verify if the account is a "child account"
+        # Example: Check if the account has a specific flag or lacks certain attributes
+        # For instance, child accounts might not have linked users
+        if child_data.get("linked"):
+            raise HTTPException(status_code=400, detail="User is not a child account")
+        
         search_result = {
             "name": child_details.get("name", ""),
             "age": child_details.get("age", None)
@@ -66,7 +79,7 @@ def search_child(req: SearchChildRequest):
         if hasattr(e, 'detail'):
             error_message = getattr(e, 'detail', error_message)
         raise HTTPException(status_code=400, detail={"error": "Failed to search user", "details": error_message})
- 
+    
 @router.post("/request-uid-link")
 def request_child_link(req: LinkChildRequest):
     """Send a link request from a parent to a child."""
