@@ -114,14 +114,12 @@ def request_child_link(req: LinkChildRequest):
         # Save request in receiver's pending_link_requests
         receiver_ref.child(f"pending_link_requests/{sender_uid}").set({
             "name": sender_data.get("user_details", {}).get("name", ""),
-            "email": sender_data.get("user_details", {}).get("email", ""),
             "status": "pending",
             "timestamp": datetime.datetime.now().isoformat()
         })
         # Save request in sender's sent_link_requests
         sender_ref.child(f"sent_link_requests/{req.target_id}").set({
             "name": receiver_data.get("user_details", {}).get("name", ""),
-            "email": receiver_data.get("user_details", {}).get("email", ""),
             "status": "pending",
             "timestamp": datetime.datetime.now().isoformat()
         })
@@ -193,7 +191,7 @@ def handle_request(req: HandleRequest):
         if hasattr(e, 'detail'):
             error_message = getattr(e, 'detail', error_message)
         raise HTTPException(status_code=401, detail={"error": "Failed to handle link request", "details": error_message})
-
+# this api we need to delete
 @router.post("/fetch-user-details")
 def fetch_child_details(req: TokenRequest):
     """Fetch details of all linked children for a parent."""
@@ -220,7 +218,7 @@ def fetch_child_details(req: TokenRequest):
         if hasattr(e, 'detail'):
             error_message = getattr(e, 'detail', error_message)
         raise HTTPException(status_code=401, detail={"error": "Failed to fetch linked user details", "details": error_message})
-
+# this api we need to delete
 @router.post("/fetch-user-requests")
 def fetch_parent_requests(req: TokenRequest):
     """Fetch sent requests for a user."""
@@ -251,7 +249,7 @@ def delete_request(req: DeleteRequest):
         raise HTTPException(status_code=401, detail={"error": "Failed to delete request", "details": error_message})
 
 @router.post("/linked-user")
-def linked_children(req: FetchLinkedChildrenRequest):
+def linked_children(req: TokenRequest):
     """Fetch list of linked user."""
     try:
         uid = verify_user_token(req.idToken)
