@@ -145,6 +145,7 @@ class PushTokenRequest(BaseModel):
 
 class SearchChildRequest(BaseModel):
     """Model for searching a child by ID."""
+    idToken: str
     target_id: str
 
 class LinkChildRequest(BaseModel):

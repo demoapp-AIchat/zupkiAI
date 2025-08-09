@@ -47,34 +47,49 @@ def fetch_user_details(req: TokenRequest):
     
     
 @router.post("/search-user")
-def search_child(req: SearchChildRequest):
-    """Search for user by ID."""
+def search_user(req: SearchChildRequest):
+    """Search for any user by ID and return link status."""
     try:
-        child_ref = db.reference(f"users/{req.target_id}")
-        child_data = child_ref.get()
+        # Authenticate the requesting user
+        requester_uid = verify_user_token(req.idToken)
+        if not requester_uid:
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        # Fetch target user data
+        target_ref = db.reference(f"users/{req.target_id}")
+        target_data = target_ref.get()
         
         # Check if user exists
-        if not child_data:
-            raise HTTPException(status_code=404, detail="Child ID not found")
+        if not target_data:
+            raise HTTPException(status_code=404, detail="User ID not found")
         
-        # Check if user has user_details (assuming child accounts must have user_details)
-        child_details = child_data.get("user_details", {})
-        if not child_details:
-            raise HTTPException(status_code=404, detail="Child account details not found")
+        # Check if user has user_details
+        target_details = target_data.get("user_details", {})
+        if not target_details:
+            raise HTTPException(status_code=404, detail="User account details not found")
         
-        # Optionally, add logic to verify if the account is a "child account"
-        # Example: Check if the account has a specific flag or lacks certain attributes
-        # For instance, child accounts might not have linked users
-        if child_data.get("linked"):
-            raise HTTPException(status_code=400, detail="User is not a child account")
+        # Determine link status
+        link_status = "not_requested"
+        requester_ref = db.reference(f"users/{requester_uid}")
+        requester_data = requester_ref.get()
         
+        if requester_data:
+            # Check if requester has sent a link request to target
+            sent_requests = requester_data.get("sent_link_requests", {})
+            if req.target_id in sent_requests and sent_requests[req.target_id].get("status") == "pending":
+                link_status = "pending"
+            # Check if users are mutually linked
+            elif req.target_id in requester_data.get("linked", {}) and requester_uid in target_data.get("linked", {}):
+                link_status = "accepted"
+
         search_result = {
-            "name": child_details.get("name", ""),
-            "age": child_details.get("age", None)
+            "name": target_details.get("name", ""),
+            "age": target_details.get("age", None),
+            "link_status": link_status
         }
         return {"status": "success", "data": search_result}
     except Exception as e:
-        logger.error(f"Error searching child: {str(e)}")
+        logger.error(f"Error searching user: {str(e)}")
         error_message = str(e)
         if hasattr(e, 'detail'):
             error_message = getattr(e, 'detail', error_message)
@@ -120,7 +135,7 @@ def request_child_link(req: LinkChildRequest):
 
 @router.post("/fetch-pending-requests")
 def fetch_pending_requests(req: TokenRequest):
-    """Fetch pending parent requests for a child."""
+    """Fetch pending link requests for the user."""
     try:
         uid = verify_user_token(req.idToken)
         user_ref = db.reference(f"users/{uid}")
@@ -129,7 +144,13 @@ def fetch_pending_requests(req: TokenRequest):
             raise HTTPException(status_code=404, detail="User not found")
 
         pending_requests = user_data.get("pending_link_requests", {})
-        return {"status": "success", "data": pending_requests}
+        # Filter requests to include only those with status "pending"
+        filtered_requests = {
+            requester_id: details
+            for requester_id, details in pending_requests.items()
+            if isinstance(details, dict) and details.get("status") == "pending"
+        }
+        return {"status": "success", "data": filtered_requests}
     except Exception as e:
         logger.error(f"Error fetching pending requests: {str(e)}")
         error_message = str(e)
@@ -147,21 +168,21 @@ def handle_request(req: HandleRequest):
         if not receiver_data:
             raise HTTPException(status_code=404, detail="Receiver not found")
         # Check if sender_id exists in receiver's pending_link_requests
-        if req.user_id not in receiver_data.get("pending_link_requests", {}):
+        if req.target_id not in receiver_data.get("pending_link_requests", {}):
             raise HTTPException(status_code=404, detail="Request not found")
-        sender_ref = db.reference(f"users/{req.user_id}")
+        sender_ref = db.reference(f"users/{req.target_id}")
         sender_data = sender_ref.get()
         if not sender_data:
             raise HTTPException(status_code=404, detail="Sender not found")
         if req.action.lower() == "allow":
             # Mark as linked for both users
-            receiver_ref.child(f"linked/{req.user_id}").set(True)
+            receiver_ref.child(f"linked/{req.target_id}").set(True)
             sender_ref.child(f"linked/{receiver_uid}").set(True)
-            receiver_ref.child(f"pending_link_requests/{req.user_id}/status").set("approved")
+            receiver_ref.child(f"pending_link_requests/{req.target_id}/status").set("approved")
             sender_ref.child(f"sent_link_requests/{receiver_uid}/status").set("approved")
             return {"status": "success", "message": "Link request approved successfully"}
         elif req.action.lower() == "decline":
-            receiver_ref.child(f"pending_link_requests/{req.user_id}/status").set("declined")
+            receiver_ref.child(f"pending_link_requests/{req.target_id}/status").set("declined")
             sender_ref.child(f"sent_link_requests/{receiver_uid}/status").set("declined")
             return {"status": "success", "message": "Link request declined"}
         else:
