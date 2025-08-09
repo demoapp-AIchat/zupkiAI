@@ -121,6 +121,7 @@ class TodoTask(BaseModel):
 
 class AddMultipleTodoTasksRequest(BaseModel):
     idToken: str
+    target_id:Optional[str] = None
     tasks: List[TodoTask]
 
 class DeleteHealthTrackRequest(BaseModel):
@@ -211,7 +212,7 @@ class GetCustomUidRequest(BaseModel):
 
 class GetLinkedUserTodoListsRequest(BaseModel):
     idToken: str
-    target_uid: str
+    target_id: Optional[str] = None
 
 class UpdateLinkedUserTodoTaskRequest(BaseModel):
     idToken: str

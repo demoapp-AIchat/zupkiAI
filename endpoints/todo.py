@@ -11,40 +11,51 @@ import json
 import random
 import re
 import uuid
+from typing import Optional
 router = APIRouter()
 logger = logging.getLogger(__name__)
-@router.post("/get-linked-user-todo-lists")
-async def get_linked_user_todo_lists(req: GetLinkedUserTodoListsRequest):
+
+def get_accessible_uid(custom_uid: str, target_id: Optional[str], user_data: dict) -> str:
+    if target_id:
+        linked = user_data.get("linked", {})
+        if target_id not in linked:
+            raise HTTPException(status_code=403, detail="You are not linked to this user.")
+        return target_id
+    return custom_uid
+
+
+@router.post("/get-all-todo-lists-users")
+async def get_all_todo_lists(req:GetLinkedUserTodoListsRequest ):
     """
-    Fetch all custom to-do lists for a user that the requester is linked to.
+    Fetch all custom to-do lists for the user or their linked target user.
     """
     try:
         custom_uid = verify_user_token(req.idToken)
-        # Require target_uid in the request body
-        if not hasattr(req, "target_uid") or not req.target_uid:
-            raise HTTPException(status_code=400, detail="target_uid is required in the request body.")
         user_data = fetch_user_data(custom_uid)
-        linked = user_data.get("linked", {})
-        if req.target_uid not in linked:
-            raise HTTPException(status_code=403, detail="You are not linked to this user.")
-        todo_lists_ref = db.reference(f"users/{req.target_uid}/custom_todo_lists")
+        
+        # This will return the UID for which data should be fetched (either self or target_id)
+        effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
+
+        todo_lists_ref = db.reference(f"users/{effective_uid}/custom_todo_lists")
         all_lists = todo_lists_ref.get() or {}
-        user_result = []
+
+        result = []
         for date, tasks in all_lists.items():
             if isinstance(tasks, dict):
-                user_result.append({
+                result.append({
                     "date": date,
                     "tasks": list(tasks.values())
                 })
+
         return {
             "status": "success",
-            "linked_todo_lists": {
-                req.target_uid: user_result
-            }
+            "todo_lists": result
         }
+
     except Exception as e:
-        logger.error(f"Error in get-linked-user-todo-lists endpoint: {str(e)}")
+        logger.error(f"Error in get-all-todo-lists endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
 
 @router.post("/update-linked-user-todo-task")
 async def update_linked_user_todo_task(req: UpdateLinkedUserTodoTaskRequest):
@@ -258,13 +269,18 @@ async def generate_todo(req: TokenRequest):
     except Exception as e:
         logger.error(f"Error in generate-todo endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+    
+
 @router.post("/add-todo-task")
 async def add_todo_task(req: AddMultipleTodoTasksRequest):
-    """Add multiple custom to-do tasks for the user (up to 7)."""
+    """Add multiple custom to-do tasks for the user (up to 7), or for a linked user."""
     try:
         custom_uid = verify_user_token(req.idToken)
         if not custom_uid:
             raise HTTPException(status_code=401, detail="Invalid token")
+
+        user_data = fetch_user_data(custom_uid)
+        effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
 
         now = datetime.datetime.now(india_tz).isoformat()
         current_date = datetime.datetime.now(india_tz).date().isoformat()
@@ -274,10 +290,8 @@ async def add_todo_task(req: AddMultipleTodoTasksRequest):
 
         import calendar
         saved_tasks = []
+
         def get_next_dates_for_weekdays(weekdays, start_date, num_weeks=4):
-            # weekdays: list of strings like ["mon", "tue", "fri"]
-            # start_date: datetime.date
-            # Returns: list of dates for each weekday in the next num_weeks weeks
             weekday_map = {
                 "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6
             }
@@ -308,7 +322,7 @@ async def add_todo_task(req: AddMultipleTodoTasksRequest):
                         "recurring": task.recurring,
                         "recurring_group_id": recurring_group_id
                     }
-                    todo_ref = db.reference(f"users/{custom_uid}/custom_todo_lists/{date.isoformat()}/{task_id}")
+                    todo_ref = db.reference(f"users/{effective_uid}/custom_todo_lists/{date.isoformat()}/{task_id}")
                     todo_ref.set(task_data)
                     saved_tasks.append(task_data)
             else:
@@ -325,7 +339,8 @@ async def add_todo_task(req: AddMultipleTodoTasksRequest):
                     "time": task.time,
                     "recurring": task.recurring if hasattr(task, 'recurring') else None
                 }
-                todo_ref = db.reference(f"users/{custom_uid}/custom_todo_lists/{current_date}/{task_id}")
+
+                todo_ref = db.reference(f"users/{effective_uid}/custom_todo_lists/{current_date}/{task_id}")
                 todo_ref.set(task_data)
                 saved_tasks.append(task_data)
 
@@ -336,19 +351,22 @@ async def add_todo_task(req: AddMultipleTodoTasksRequest):
     except Exception as e:
         logger.error(f"Error in add-todo-task endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-    from fastapi import Body
 
+#No need of this any more
 @router.post("/get-all-todo-lists")
-async def get_all_todo_lists(req: TokenRequest = Body(...)):
+async def get_all_todo_lists(req: GetLinkedUserTodoListsRequest):
     """
     Fetch all custom to-do lists for the user (all dates).
     """
     try:
         custom_uid = verify_user_token(req.idToken)
-        if not custom_uid:
-            raise HTTPException(status_code=401, detail="Invalid token")
+        user_data = fetch_user_data(custom_uid)
+        
+        # This will return the UID for which data should be fetched (either self or target_id)
+        effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
 
-        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
+        todo_lists_ref = db.reference(f"users/{effective_uid}/custom_todo_lists")
+
         all_lists = todo_lists_ref.get() or {}
 
         # Format: [{ "date": date, "tasks": [ ... ] }, ...]
@@ -404,10 +422,12 @@ async def delete_todo_task(req: UpdateTodoTaskRequest):
     """
     try:
         custom_uid = verify_user_token(req.idToken)
-        if not custom_uid:
-            raise HTTPException(status_code=401, detail="Invalid token")
+        user_data = fetch_user_data(custom_uid)
+        
+        # This will return the UID for which data should be fetched (either self or target_id)
+        effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
 
-        task_ref = db.reference(f"users/{custom_uid}/custom_todo_lists/{req.date}/{req.task_id}")
+        task_ref = db.reference(f"users/{effective_uid}/custom_todo_lists/{req.date}/{req.task_id}")
         task_data = task_ref.get()
         if not task_data:
             raise HTTPException(status_code=404, detail="Task not found")
@@ -422,16 +442,18 @@ async def delete_todo_task(req: UpdateTodoTaskRequest):
         logger.error(f"Error in delete-todo-task endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 @router.post("/get-upcoming-todo-tasks")
-async def get_upcoming_todo_tasks(req: TokenRequest):
+async def get_upcoming_todo_tasks(req: GetLinkedUserTodoListsRequest):
     """
     Fetch all to-do tasks for the user for today and future dates.
     """
     try:
         custom_uid = verify_user_token(req.idToken)
-        if not custom_uid:
-            raise HTTPException(status_code=401, detail="Invalid token")
+        user_data = fetch_user_data(custom_uid)
+        
+        # This will return the UID for which data should be fetched (either self or target_id)
+        effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
 
-        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
+        todo_lists_ref = db.reference(f"users/{effective_uid}/custom_todo_lists")
         all_lists = todo_lists_ref.get() or {}
 
         current_date = datetime.datetime.now(india_tz).date().isoformat()
@@ -457,16 +479,18 @@ async def get_upcoming_todo_tasks(req: TokenRequest):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.post("/get-completed-todo-tasks")
-async def get_completed_todo_tasks(req: TokenRequest):
+async def get_completed_todo_tasks(req: GetLinkedUserTodoListsRequest):
     """
     Fetch all completed to-do tasks for the user.
     """
     try:
         custom_uid = verify_user_token(req.idToken)
-        if not custom_uid:
-            raise HTTPException(status_code=401, detail="Invalid token")
+        user_data = fetch_user_data(custom_uid)
+        
+        # This will return the UID for which data should be fetched (either self or target_id)
+        effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
 
-        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
+        todo_lists_ref = db.reference(f"users/{effective_uid}/custom_todo_lists")
         all_lists = todo_lists_ref.get() or {}
 
         result = []
@@ -491,122 +515,18 @@ async def get_completed_todo_tasks(req: TokenRequest):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.post("/get-missed-todo-tasks")
-async def get_missed_todo_tasks(req: TokenRequest):
+async def get_missed_todo_tasks(req: GetLinkedUserTodoListsRequest):
     """
     Fetch all missed to-do tasks for the user (tasks before today that are not completed).
     """
     try:
         custom_uid = verify_user_token(req.idToken)
-        if not custom_uid:
-            raise HTTPException(status_code=401, detail="Invalid token")
+        user_data = fetch_user_data(custom_uid)
+        
+        # This will return the UID for which data should be fetched (either self or target_id)
+        effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
 
-        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
-        all_lists = todo_lists_ref.get() or {}
-
-        current_date = datetime.datetime.now(india_tz).date().isoformat()
-        result = []
-
-        for date, tasks in all_lists.items():
-            # Consider tasks from past dates only
-            if isinstance(tasks, dict) and date < current_date:
-                # Missed tasks are those not marked as completed
-                missed_tasks = [task for task in tasks.values() if task.get("status") != "completed"]
-                if missed_tasks:
-                    result.append({
-                        "date": date,
-                        "tasks": missed_tasks
-                    })
-
-        # Sort by date for chronological order
-        result.sort(key=lambda x: x["date"])
-
-        return {
-            "status": "success",
-            "todo_lists": result
-        }
-    except Exception as e:
-        logger.error(f"Error in get-missed-todo-tasks endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-@router.post("/get-upcoming-todo-tasks")
-async def get_upcoming_todo_tasks(req: TokenRequest):
-    """
-    Fetch all to-do tasks for the user for today and future dates.
-    """
-    try:
-        custom_uid = verify_user_token(req.idToken)
-        if not custom_uid:
-            raise HTTPException(status_code=401, detail="Invalid token")
-
-        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
-        all_lists = todo_lists_ref.get() or {}
-
-        current_date = datetime.datetime.now(india_tz).date().isoformat()
-        result = []
-
-        for date, tasks in all_lists.items():
-            # Include tasks from today and future dates
-            if isinstance(tasks, dict) and date >= current_date:
-                result.append({
-                    "date": date,
-                    "tasks": list(tasks.values())
-                })
-
-        # Sort by date for chronological order
-        result.sort(key=lambda x: x["date"])
-
-        return {
-            "status": "success",
-            "todo_lists": result
-        }
-    except Exception as e:
-        logger.error(f"Error in get-upcoming-todo-tasks endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@router.post("/get-completed-todo-tasks")
-async def get_completed_todo_tasks(req: TokenRequest):
-    """
-    Fetch all completed to-do tasks for the user.
-    """
-    try:
-        custom_uid = verify_user_token(req.idToken)
-        if not custom_uid:
-            raise HTTPException(status_code=401, detail="Invalid token")
-
-        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
-        all_lists = todo_lists_ref.get() or {}
-
-        result = []
-        for date, tasks in all_lists.items():
-            if isinstance(tasks, dict):
-                completed_tasks = [task for task in tasks.values() if task.get("status") == "completed"]
-                if completed_tasks:
-                    result.append({
-                        "date": date,
-                        "tasks": completed_tasks
-                    })
-
-        # Sort by date for chronological order
-        result.sort(key=lambda x: x["date"])
-
-        return {
-            "status": "success",
-            "todo_lists": result
-        }
-    except Exception as e:
-        logger.error(f"Error in get-completed-todo-tasks endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-@router.post("/get-missed-todo-tasks")
-async def get_missed_todo_tasks(req: TokenRequest):
-    """
-    Fetch all missed to-do tasks for the user (tasks before today that are not completed).
-    """
-    try:
-        custom_uid = verify_user_token(req.idToken)
-        if not custom_uid:
-            raise HTTPException(status_code=401, detail="Invalid token")
-
-        todo_lists_ref = db.reference(f"users/{custom_uid}/custom_todo_lists")
+        todo_lists_ref = db.reference(f"users/{effective_uid}/custom_todo_lists")
         all_lists = todo_lists_ref.get() or {}
 
         current_date = datetime.datetime.now(india_tz).date().isoformat()
