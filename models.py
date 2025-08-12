@@ -107,7 +107,6 @@ class MedicineReminder(BaseModel):
     reminder_id: Optional[str] = None
     recurring: Optional[List[str]] = None  # e.g., ["sun", "mon", "tue"]
     status: Optional[str] = "pending"
-    created_at_time: Optional[str] = None
     updated_at_time: Optional[str] = None
 
 class AddMedicineReminderRequest(BaseModel):
@@ -255,6 +254,7 @@ class UpdateLinkedUserTodoTaskRequest(BaseModel):
     idToken: str
     linked_uid: str
     date: str
+    target_id: Optional[str] = None
     task_id: str
     title: Optional[str] = None
     description: Optional[str] = None
@@ -269,6 +269,7 @@ class UpdateTodoTaskRequest(BaseModel):
     idToken: str
     date: str
     task_id: str
+    target_id: Optional[str] = None
     title: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None

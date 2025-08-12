@@ -289,8 +289,8 @@ async def add_todo_task(req: AddMultipleTodoTasksRequest):
                         "title": task.title,
                         "description": task.description,
                         "status": task.status or "pending",
-                        "created_at_time": task.created_at_time or now,
-                        "updated_at_time": task.updated_at_time or now,
+                        "created_at_time": task.created_at_time ,
+                        "updated_at_time": task.updated_at_time ,
                         "completed_at_time": task.completed_at_time,
                         "priority": task.priority or "medium",
                         "task_id": task_id,
@@ -314,8 +314,8 @@ async def add_todo_task(req: AddMultipleTodoTasksRequest):
                     "title": task.title,
                     "description": task.description,
                     "status": task.status or "pending",
-                    "created_at_time": task.created_at_time or now,
-                    "updated_at_time": task.updated_at_time or now,
+                    "created_at_time": task.created_at_time ,
+                    "updated_at_time": task.updated_at_time ,
                     "completed_at_time": task.completed_at_time,
                     "priority": task.priority or "medium",
                     "task_id": task_id,
@@ -389,7 +389,7 @@ async def update_todo_task(req: UpdateTodoTaskRequest):
         user_data = fetch_user_data(custom_uid)
         
         # This will return the UID for which data should be fetched (either self or target_uid)
-        effective_uid = get_accessible_uid(custom_uid, req.target_uid, user_data)
+        effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
 
         task_ref = db.reference(f"users/{effective_uid}/custom_todo_lists/{req.date}/{req.task_id}")
 
