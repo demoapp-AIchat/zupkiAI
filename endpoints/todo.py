@@ -2,7 +2,8 @@ from fastapi import APIRouter, HTTPException,Body
 from models import TokenRequest,AddMultipleTodoTasksRequest,UpdateTodoTaskRequest,UpdateLinkedUserTodoTaskRequest,GetLinkedUserTodoListsRequest
 from database import verify_user_token, fetch_user_data
 from helpers import india_tz, generate_random_time, is_valid_three_word_task, is_reminder_in_period
-from openai import AsyncOpenAI
+from openai import AsyncOpenAI   
+from firebase_admin.exceptions import FirebaseError
 from firebase_admin import db
 import os
 import datetime
@@ -15,6 +16,15 @@ from typing import Optional
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+
+# Initialize OpenAI client
+openai_api_key = os.getenv("OPENAI_API_KEY")
+if not openai_api_key:
+    raise RuntimeError("OPENAI_API_KEY not set in .env")
+client = AsyncOpenAI(api_key=openai_api_key)
+
+
+
 def get_accessible_uid(custom_uid: str, target_id: Optional[str], user_data: dict) -> str:
     if target_id:
         linked = user_data.get("linked", {})
@@ -22,79 +32,6 @@ def get_accessible_uid(custom_uid: str, target_id: Optional[str], user_data: dic
             raise HTTPException(status_code=403, detail="You are not linked to this user.")
         return target_id
     return custom_uid
-
-
-@router.post("/get-all-todo-lists-users")
-async def get_all_todo_lists(req:GetLinkedUserTodoListsRequest ):
-    """
-    Fetch all custom to-do lists for the user or their linked target user.
-    """
-    try:
-        custom_uid = verify_user_token(req.idToken)
-        user_data = fetch_user_data(custom_uid)
-        
-        # This will return the UID for which data should be fetched (either self or target_id)
-        effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
-
-        todo_lists_ref = db.reference(f"users/{effective_uid}/custom_todo_lists")
-        all_lists = todo_lists_ref.get() or {}
-
-        result = []
-        for date, tasks in all_lists.items():
-            if isinstance(tasks, dict):
-                result.append({
-                    "date": date,
-                    "tasks": list(tasks.values())
-                })
-
-        return {
-            "status": "success",
-            "todo_lists": result
-        }
-
-    except Exception as e:
-        logger.error(f"Error in get-all-todo-lists endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
-
-@router.post("/update-linked-user-todo-task")
-async def update_linked_user_todo_task(req: UpdateLinkedUserTodoTaskRequest):
-    """
-    Update any field of a specific to-do task for a user that the requester is linked to.
-    """
-    try:
-        custom_uid = verify_user_token(req.idToken)
-        user_data = fetch_user_data(custom_uid)
-        linked = user_data.get("linked", {})
-        if not linked:
-            raise HTTPException(status_code=403, detail="No linked users found.")
-        # The request must include the target linked user's UID
-        if not hasattr(req, "linked_uid") or not req.linked_uid:
-            raise HTTPException(status_code=400, detail="linked_uid is required in the request body.")
-        if req.linked_uid not in linked:
-            raise HTTPException(status_code=403, detail="You are not linked to this user.")
-        task_ref = db.reference(f"users/{req.linked_uid}/custom_todo_lists/{req.date}/{req.task_id}")
-        task_data = task_ref.get()
-        if not task_data:
-            raise HTTPException(status_code=404, detail="Task not found")
-        # Update all fields except task_id
-        for field in ["title", "description", "status", "created_at_time", "updated_at_time", "completed_at_time", "priority", "time", "recurring"]:
-            value = getattr(req, field, None)
-            if value is not None:
-                task_data[field] = value
-        task_ref.set(task_data)
-        return {
-            "status": "success",
-            "task": task_data
-        }
-    except Exception as e:
-        logger.error(f"Error in update-linked-user-todo-task endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-# Initialize OpenAI client
-openai_api_key = os.getenv("OPENAI_API_KEY")
-if not openai_api_key:
-    raise RuntimeError("OPENAI_API_KEY not set in .env")
-client = AsyncOpenAI(api_key=openai_api_key)
 
 @router.post("/generate-todo")
 async def generate_todo(req: TokenRequest):
@@ -275,38 +212,77 @@ async def generate_todo(req: TokenRequest):
 async def add_todo_task(req: AddMultipleTodoTasksRequest):
     """Add multiple custom to-do tasks for the user (up to 7), or for a linked user."""
     try:
+        logger.debug(f"Received request: {req.dict()}")
+        
+        # Verify user token
         custom_uid = verify_user_token(req.idToken)
         if not custom_uid:
+            logger.error("Invalid token provided")
             raise HTTPException(status_code=401, detail="Invalid token")
 
+        # Fetch user data
         user_data = fetch_user_data(custom_uid)
+        if not user_data:
+            logger.error(f"User data not found for UID: {custom_uid}")
+            raise HTTPException(status_code=404, detail="User data not found")
+
         effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
+        logger.debug(f"Effective UID: {effective_uid}")
 
         now = datetime.datetime.now(india_tz).isoformat()
-        current_date = datetime.datetime.now(india_tz).date().isoformat()
+        current_date = datetime.datetime.now(india_tz).date()
+        logger.debug(f"Current date: {current_date.isoformat()}, Current time: {now}")
 
         if not req.tasks or len(req.tasks) > 7:
+            logger.error(f"Invalid number of tasks: {len(req.tasks)}")
             raise HTTPException(status_code=400, detail="You must provide between 1 and 7 tasks.")
 
-        import calendar
+        # Test Firebase connectivity
+        try:
+            test_ref = db.reference("test_connectivity")
+            test_ref.set({"timestamp": now})
+            logger.debug("Firebase connectivity test successful")
+        except FirebaseError as e:
+            logger.error(f"Firebase connectivity test failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to connect to Firebase: {str(e)}")
+
         saved_tasks = []
 
         def get_next_dates_for_weekdays(weekdays, start_date, num_weeks=4):
             weekday_map = {
                 "mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6
             }
-            weekdays_idx = [weekday_map[d[:3].lower()] for d in weekdays if d[:3].lower() in weekday_map]
+            if not weekdays:
+                logger.warning(f"No weekdays provided for recurring task. Using start_date: {start_date.isoformat()}")
+                return [start_date]
+            weekdays_idx = [weekday_map.get(d[:3].lower()) for d in weekdays if d[:3].lower() in weekday_map]
+            if not weekdays_idx:
+                logger.warning(f"Invalid weekdays provided: {weekdays}. Using start_date: {start_date.isoformat()}")
+                return [start_date]
             dates = []
             for i in range(num_weeks * 7):
                 date = start_date + datetime.timedelta(days=i)
                 if date.weekday() in weekdays_idx:
                     dates.append(date)
-            return dates
+            return dates if dates else [start_date]
 
         for task in req.tasks:
+            logger.debug(f"Processing task: {task.title}")
+            
+            # Validate created_at_time
+            task_date = current_date
+            if task.created_at_time:
+                try:
+                    task_date = datetime.datetime.fromisoformat(task.created_at_time).date()
+                    logger.debug(f"Using created_at_time {task.created_at_time} for task {task.title}")
+                except ValueError as e:
+                    logger.error(f"Invalid created_at_time format for task {task.title}: {str(e)}")
+                    raise HTTPException(status_code=400, detail=f"Invalid created_at_time format for task {task.title}. Must be ISO 8601 (e.g., '2025-08-12T09:00:00+05:30').")
+
             if task.recurring:
                 recurring_group_id = str(uuid.uuid4())
-                recurring_dates = get_next_dates_for_weekdays(task.recurring, datetime.datetime.now(india_tz).date())
+                recurring_dates = get_next_dates_for_weekdays(task.recurring, task_date)
+                logger.info(f"Recurring task {task.title} scheduled for dates: {[d.isoformat() for d in recurring_dates]}")
                 for date in recurring_dates:
                     task_id = str(uuid.uuid4())
                     task_data = {
@@ -319,12 +295,19 @@ async def add_todo_task(req: AddMultipleTodoTasksRequest):
                         "priority": task.priority or "medium",
                         "task_id": task_id,
                         "time": task.time,
+                        "catagory": task.catagory,
                         "recurring": task.recurring,
                         "recurring_group_id": recurring_group_id
                     }
-                    todo_ref = db.reference(f"users/{effective_uid}/custom_todo_lists/{date.isoformat()}/{task_id}")
-                    todo_ref.set(task_data)
-                    saved_tasks.append(task_data)
+                    try:
+                        todo_ref = db.reference(f"users/{effective_uid}/custom_todo_lists/{date.isoformat()}/{task_id}")
+                        logger.debug(f"Writing task {task_id} to Firebase path: {todo_ref.path}")
+                        todo_ref.set(task_data)
+                        saved_tasks.append(task_data)
+                        logger.info(f"Task {task_id} saved for {date.isoformat()}")
+                    except FirebaseError as e:
+                        logger.error(f"Firebase write failed for task {task_id} on {date.isoformat()}: {str(e)}")
+                        raise HTTPException(status_code=500, detail=f"Failed to save task {task_id} on {date.isoformat()}: {str(e)}")
             else:
                 task_id = task.task_id or str(uuid.uuid4())
                 task_data = {
@@ -337,13 +320,24 @@ async def add_todo_task(req: AddMultipleTodoTasksRequest):
                     "priority": task.priority or "medium",
                     "task_id": task_id,
                     "time": task.time,
-                    "recurring": task.recurring if hasattr(task, 'recurring') else None
+                    "catagory": task.catagory,
+                    "recurring": task.recurring
                 }
+                try:
+                    todo_ref = db.reference(f"users/{effective_uid}/custom_todo_lists/{task_date.isoformat()}/{task_id}")
+                    logger.debug(f"Writing task {task_id} to Firebase path: {todo_ref.path}")
+                    todo_ref.set(task_data)
+                    saved_tasks.append(task_data)
+                    logger.info(f"Task {task_id} saved for {task_date.isoformat()}")
+                except FirebaseError as e:
+                    logger.error(f"Firebase write failed for task {task_id} on {task_date.isoformat()}: {str(e)}")
+                    raise HTTPException(status_code=500, detail=f"Failed to save task {task_id} on {task_date.isoformat()}: {str(e)}")
 
-                todo_ref = db.reference(f"users/{effective_uid}/custom_todo_lists/{current_date}/{task_id}")
-                todo_ref.set(task_data)
-                saved_tasks.append(task_data)
+        if not saved_tasks:
+            logger.warning("No tasks were saved to the database.")
+            raise HTTPException(status_code=500, detail="No tasks were saved to the database. Check logs for details.")
 
+        logger.debug(f"Returning {len(saved_tasks)} saved tasks")
         return {
             "status": "success",
             "tasks": saved_tasks
@@ -351,7 +345,7 @@ async def add_todo_task(req: AddMultipleTodoTasksRequest):
     except Exception as e:
         logger.error(f"Error in add-todo-task endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-
+    
 #No need of this any more
 @router.post("/get-all-todo-lists")
 async def get_all_todo_lists(req: GetLinkedUserTodoListsRequest):
@@ -392,10 +386,13 @@ async def update_todo_task(req: UpdateTodoTaskRequest):
     """
     try:
         custom_uid = verify_user_token(req.idToken)
-        if not custom_uid:
-            raise HTTPException(status_code=401, detail="Invalid token")
+        user_data = fetch_user_data(custom_uid)
+        
+        # This will return the UID for which data should be fetched (either self or target_uid)
+        effective_uid = get_accessible_uid(custom_uid, req.target_uid, user_data)
 
-        task_ref = db.reference(f"users/{custom_uid}/custom_todo_lists/{req.date}/{req.task_id}")
+        task_ref = db.reference(f"users/{effective_uid}/custom_todo_lists/{req.date}/{req.task_id}")
+
         task_data = task_ref.get()
         if not task_data:
             raise HTTPException(status_code=404, detail="Task not found")
@@ -416,7 +413,7 @@ async def update_todo_task(req: UpdateTodoTaskRequest):
         logger.error(f"Error in update-todo-task endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 @router.post("/delete-todo-task")
-async def delete_todo_task(req: UpdateTodoTaskRequest):
+async def delete_todo_task(req: GetLinkedUserTodoListsRequest):
     """
     Delete a specific to-do task for the user by date and task_id.
     """

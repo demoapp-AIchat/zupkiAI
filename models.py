@@ -88,9 +88,39 @@ class HealthTrack(BaseModel):
     health_metrics: Optional[List[HealthMetric]] = None
 
 class MedicineReminder(BaseModel):
-    """Model for medicine reminder details."""
-    idToken: str
+    """Model for single medicine reminder."""
+    medicine_name: str
+    pill_details: Optional[str] = None
+    end_date: Optional[str] = None
+    amount_per_box: Optional[str] = None
+    initial_quantity: Optional[str] = None
+    time: Optional[str] = None
+    current_quantity: Optional[str] = None
+    reminder_date: Optional[str] = None
+    start_from_today: Optional[bool] = None
+    take_medicine_alert: Optional[bool] = None
+    ring_phone: Optional[bool] = None
+    send_message: Optional[bool] = None
+    refill_reminder: Optional[bool] = None
+    set_refill_date: Optional[str] = None
+    set_day_before_refill: Optional[int] = None
     reminder_id: Optional[str] = None
+    recurring: Optional[List[str]] = None  # e.g., ["sun", "mon", "tue"]
+    status: Optional[str] = "pending"
+    created_at_time: Optional[str] = None
+    updated_at_time: Optional[str] = None
+
+class AddMedicineReminderRequest(BaseModel):
+    """Model for adding medicine reminders."""
+    idToken: str
+    target_id: Optional[str] = None
+    reminders: List[MedicineReminder]
+
+class UpdateMedicineReminderRequest(BaseModel):
+    """Model for updating medicine reminder."""
+    idToken: str
+    target_id: Optional[str] = None
+    reminder_id: str
     medicine_name: Optional[str] = None
     pill_details: Optional[str] = None
     end_date: Optional[str] = None
@@ -99,13 +129,15 @@ class MedicineReminder(BaseModel):
     time: Optional[str] = None
     current_quantity: Optional[str] = None
     reminder_date: Optional[str] = None
-    start_from_today: Optional[str] = None
-    take_medicine_alert: Optional[str] = None
-    ring_phone: Optional[str] = None
-    send_message: Optional[str] = None
-    refill_reminder: Optional[str] = None
+    start_from_today: Optional[bool] = None
+    take_medicine_alert: Optional[bool] = None
+    ring_phone: Optional[bool] = None
+    send_message: Optional[bool] = None
+    refill_reminder: Optional[bool] = None
     set_refill_date: Optional[str] = None
-    set_day_before_refill: Optional[str] = None
+    set_day_before_refill: Optional[int] = None
+    recurring: Optional[List[str]] = None
+    status: Optional[str] = None
 
 class TodoTask(BaseModel):
     title: str
@@ -115,13 +147,14 @@ class TodoTask(BaseModel):
     updated_at_time: Optional[str] = None
     completed_at_time: Optional[str] = None
     time: Optional[str] = None
+    catagory: Optional[str] = None
     priority: Optional[str] = "medium"
     task_id: Optional[str] = None
-    recurring: Optional[List[str]] = None  # e.g., ["sun", "mon", "tue"]
+    recurring: Optional[List[str]] = None
 
 class AddMultipleTodoTasksRequest(BaseModel):
     idToken: str
-    target_id:Optional[str] = None
+    target_id: Optional[str] = None
     tasks: List[TodoTask]
 
 class DeleteHealthTrackRequest(BaseModel):
@@ -153,6 +186,10 @@ class LinkChildRequest(BaseModel):
     """Model for linking a child to a parent."""
     idToken: str
     target_id: str
+
+class PushTokenRequest(BaseModel):
+    idToken: str
+    push_token: Optional[str] = None
 
 class ChatResponse(BaseModel):
     """Model for chat response."""

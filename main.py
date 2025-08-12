@@ -25,6 +25,7 @@ from endpoints.chat import router as chat_router, schedule_daily_question
 from endpoints.todo import router as todo_router
 from endpoints.mood import router as mood_router
 from endpoints.conversation import router as conversation_router
+from endpoints.medicinereminder import router as medicinereminder_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -100,7 +101,7 @@ app.include_router(chat_router, prefix="")
 app.include_router(todo_router, prefix="")
 app.include_router(mood_router, prefix="")
 app.include_router(conversation_router, prefix="")
-
+app.include_router(medicinereminder_router, prefix="")
 # Health check endpoint
 @app.get("/")
 def health_check():

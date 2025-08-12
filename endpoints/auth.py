@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from models import AuthRequest, RefreshRequest, TokenRequest,PasswordResetRequest, GetCustomUidRequest
+from models import AuthRequest, RefreshRequest, TokenRequest,PasswordResetRequest, GetCustomUidRequest,PushTokenRequest
 from database import get_custom_uid
 from firebase_admin import auth, db
 import requests
@@ -154,7 +154,24 @@ async def forgot_password(req: PasswordResetRequest):
             logger.error(f"Error in forgot-password endpoint: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
         
-
+@router.post("/save-push-token")
+def save_push_token(req: PushTokenRequest):
+    try:
+        logger.info(f"Received push token request for user: {req.idToken}")
+        decoded = auth.verify_id_token(req.idToken)
+        custom_uid = get_custom_uid(decoded["uid"])
+        user_ref = db.reference(f"users/{custom_uid}")
+        user_data = user_ref.get()
+        if not user_data:
+            raise HTTPException(status_code=404, detail="User not found")
+        if req.push_token:
+            user_ref.child("push_token").set(req.push_token)
+            return {"status": "success", "message": "Push token saved successfully"}
+        return {"status": "success", "message": "No push token provided"}
+    except Exception as e:
+        logger.error(f"Error saving push token: {str(e)}")
+        raise HTTPException(status_code=401, detail=str(e))
+    
 @router.post("/get-custom-uid")
 def get_custom_uid_endpoint(req: GetCustomUidRequest):
     """Get custom UID for a given Firebase UID."""
