@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from database import verify_user_token, fetch_user_data
 from helpers import india_tz
-from models import AddMedicineReminderRequest, GetLinkedUserTodoListsRequest, UpdateMedicineReminderRequest
+from models import AddMedicineReminderRequest, GetLinkedUserTodoListsRequest, UpdateMultipleMedicineRemindersRequest
 from firebase_admin import db
 from firebase_admin.exceptions import FirebaseError
 import datetime
@@ -184,43 +184,88 @@ async def get_all_medicine_reminders(req: GetLinkedUserTodoListsRequest):
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @router.post("/update-medicine-reminder")
-async def update_medicine_reminder(req: UpdateMedicineReminderRequest):
-    """Update any field of a specific medicine reminder except reminder_id."""
+async def update_medicine_reminder(req: UpdateMultipleMedicineRemindersRequest):
+    """Update multiple medicine reminders for the user or a linked user."""
     try:
         logger.debug(f"Received request: {req.dict()}")
         
         custom_uid = verify_user_token(req.idToken)
+        if not custom_uid:
+            logger.error("Invalid token provided")
+            raise HTTPException(status_code=401, detail="Invalid token")
+
         user_data = fetch_user_data(custom_uid)
-        
+        if not user_data:
+            logger.error(f"User data not found for UID: {custom_uid}")
+            raise HTTPException(status_code=404, detail="User data not found")
+
         effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
+        logger.debug(f"Effective UID: {effective_uid}")
 
-        reminder_ref = db.reference(f"users/{effective_uid}/medicine_reminders/{req.date}/{req.reminder_id}")
-        reminder_data = reminder_ref.get()
-        if not reminder_data:
-            logger.error(f"Reminder not found for ID {req.reminder_id} on {req.date}")
-            raise HTTPException(status_code=404, detail="Reminder not found")
+        now = datetime.datetime.now(india_tz).isoformat()
+        logger.debug(f"Current time: {now}")
 
-        # Update fields from request
-        update_data = req.dict(exclude={'idToken', 'target_id', 'date', 'reminder_id'}, exclude_none=True)
-        reminder_data.update(update_data)
+        if not req.reminders or len(req.reminders) > 7:
+            logger.error(f"Invalid number of reminders: {len(req.reminders)}")
+            raise HTTPException(status_code=400, detail="You must provide between 1 and 7 reminders to update.")
 
+        # Test Firebase connectivity
         try:
-            reminder_ref.set(reminder_data)
-            logger.info(f"Reminder {req.reminder_id} updated on {req.date}")
+            test_ref = db.reference("test_connectivity")
+            test_ref.set({"timestamp": now})
+            logger.debug("Firebase connectivity test successful")
         except FirebaseError as e:
-            logger.error(f"Firebase write failed for reminder {req.reminder_id} on {req.date}: {str(e)}")
-            raise HTTPException(status_code=500, detail=f"Failed to update reminder {req.reminder_id}: {str(e)}")
+            logger.error(f"Firebase connectivity test failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to connect to Firebase: {str(e)}")
 
+        updated_reminders = []
+
+        for reminder in req.reminders:
+            logger.debug(f"Processing reminder update: reminder_id={reminder.reminder_id}, date={reminder.date}")
+
+            try:
+                # Validate date format
+                datetime.datetime.fromisoformat(reminder.date.replace('Z', '+00:00'))
+            except ValueError as e:
+                logger.error(f"Invalid date format for reminder {reminder.reminder_id}: {str(e)}")
+                raise HTTPException(status_code=400, detail=f"Invalid date format for reminder {reminder.reminder_id}. Must be YYYY-MM-DD (e.g., '2025-08-13').")
+
+            reminder_ref = db.reference(f"users/{effective_uid}/medicine_reminders/{reminder.date}/{reminder.reminder_id}")
+            reminder_data = reminder_ref.get()
+            if not reminder_data:
+                logger.error(f"Reminder not found for ID {reminder.reminder_id} on {reminder.date}")
+                raise HTTPException(status_code=404, detail=f"Reminder not found for ID {reminder.reminder_id} on {reminder.date}")
+
+            # Update fields using payload directly
+            update_data = reminder.dict(exclude={'reminder_id', 'date'}, exclude_none=True)
+            if not update_data.get('updated_at_time'):
+                update_data['updated_at_time'] = now
+            reminder_data.update(update_data)
+
+            try:
+                reminder_ref.set(reminder_data)
+                updated_reminders.append(reminder_data)
+                logger.info(f"Reminder {reminder.reminder_id} updated on {reminder.date}")
+            except FirebaseError as e:
+                logger.error(f"Firebase write failed for reminder {reminder.reminder_id} on {reminder.date}: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to update reminder {reminder.reminder_id} on {reminder.date}: {str(e)}")
+
+        if not updated_reminders:
+            logger.warning("No reminders were updated in the database.")
+            raise HTTPException(status_code=500, detail="No reminders were updated in the database. Check logs for details.")
+
+        logger.debug(f"Returning {len(updated_reminders)} updated reminders")
         return {
             "status": "success",
-            "reminder": reminder_data
+            "reminders": updated_reminders
         }
     except Exception as e:
         logger.error(f"Error in update-medicine-reminder endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
+
 @router.post("/delete-medicine-reminder")
-async def delete_medicine_reminder(req: UpdateMedicineReminderRequest):
+async def delete_medicine_reminder(req: GetLinkedUserTodoListsRequest):
     """Delete a specific medicine reminder for the user by date and reminder_id."""
     try:
         logger.debug(f"Received request: {req.dict()}")

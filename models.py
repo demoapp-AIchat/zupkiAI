@@ -115,28 +115,34 @@ class AddMedicineReminderRequest(BaseModel):
     target_id: Optional[str] = None
     reminders: List[MedicineReminder]
 
-class UpdateMedicineReminderRequest(BaseModel):
-    """Model for updating medicine reminder."""
-    idToken: str
-    target_id: Optional[str] = None
+class UpdateMedicineReminder(BaseModel):
+    date: str
     reminder_id: str
     medicine_name: Optional[str] = None
     pill_details: Optional[str] = None
+    reminder_date: Optional[str] = None
     end_date: Optional[str] = None
+    time: Optional[str] = None
+    catagory: Optional[str] = None
+    status: Optional[str] = None
+    recurring: Optional[List[str]] = None
+    start_from_today: Optional[bool] = None
     amount_per_box: Optional[str] = None
     initial_quantity: Optional[str] = None
-    time: Optional[str] = None
     current_quantity: Optional[str] = None
-    reminder_date: Optional[str] = None
-    start_from_today: Optional[bool] = None
     take_medicine_alert: Optional[bool] = None
     ring_phone: Optional[bool] = None
     send_message: Optional[bool] = None
     refill_reminder: Optional[bool] = None
     set_refill_date: Optional[str] = None
     set_day_before_refill: Optional[int] = None
-    recurring: Optional[List[str]] = None
-    status: Optional[str] = None
+    updated_at_time: Optional[str] = None
+
+class UpdateMultipleMedicineRemindersRequest(BaseModel):
+    idToken: str
+    target_id: Optional[str] = None
+    reminders: List[UpdateMedicineReminder]
+
 
 class TodoTask(BaseModel):
     title: str
