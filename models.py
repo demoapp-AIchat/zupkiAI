@@ -265,17 +265,21 @@ class UpdateLinkedUserTodoTaskRequest(BaseModel):
     completed_at_time: Optional[str] = None
     priority: Optional[str] = None
     recurring: Optional[list] = None
-class UpdateTodoTaskRequest(BaseModel):
-    idToken: str
+class UpdateTodoTask(BaseModel):
     date: str
     task_id: str
-    target_id: Optional[str] = None
     title: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
-    time: Optional[str] = None
-    created_at_time: Optional[str] = None
+    reminder_date: Optional[str] = None
     updated_at_time: Optional[str] = None
     completed_at_time: Optional[str] = None
+    time: Optional[str] = None
+    catagory: Optional[str] = None
     priority: Optional[str] = None
-    recurring: Optional[List[str]] = None  # e.g., ["sun", "mon", "tue"]
+    recurring: Optional[List[str]] = None
+
+class UpdateMultipleTodoTasksRequest(BaseModel):
+    idToken: str
+    target_id: Optional[str] = None
+    tasks: List[UpdateTodoTask]

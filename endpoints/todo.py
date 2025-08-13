@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException,Body
-from models import TokenRequest,AddMultipleTodoTasksRequest,UpdateTodoTaskRequest,UpdateLinkedUserTodoTaskRequest,GetLinkedUserTodoListsRequest
+from models import TokenRequest,AddMultipleTodoTasksRequest,UpdateLinkedUserTodoTaskRequest,GetLinkedUserTodoListsRequest,UpdateMultipleTodoTasksRequest
 from database import verify_user_token, fetch_user_data
 from helpers import india_tz, generate_random_time, is_valid_three_word_task, is_reminder_in_period
 from openai import AsyncOpenAI   
@@ -380,39 +380,85 @@ async def get_all_todo_lists(req: GetLinkedUserTodoListsRequest):
         logger.error(f"Error in get-all-todo-lists endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 @router.post("/update-todo-task")
-async def update_todo_task(req: UpdateTodoTaskRequest):
-    """
-    Update any field of a specific to-do task except task_id.
-    """
+async def update_todo_task(req: UpdateMultipleTodoTasksRequest):
+    """Update multiple to-do tasks for the user or a linked user."""
     try:
-        custom_uid = verify_user_token(req.idToken)
-        user_data = fetch_user_data(custom_uid)
+        logger.debug(f"Received request: {req.dict()}")
         
-        # This will return the UID for which data should be fetched (either self or target_uid)
+        custom_uid = verify_user_token(req.idToken)
+        if not custom_uid:
+            logger.error("Invalid token provided")
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        user_data = fetch_user_data(custom_uid)
+        if not user_data:
+            logger.error(f"User data not found for UID: {custom_uid}")
+            raise HTTPException(status_code=404, detail="User data not found")
+
         effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
+        logger.debug(f"Effective UID: {effective_uid}")
 
-        task_ref = db.reference(f"users/{effective_uid}/custom_todo_lists/{req.date}/{req.task_id}")
+        now = datetime.datetime.now(india_tz).isoformat()
+        logger.debug(f"Current time: {now}")
 
-        task_data = task_ref.get()
-        if not task_data:
-            raise HTTPException(status_code=404, detail="Task not found")
+        if not req.tasks or len(req.tasks) > 7:
+            logger.error(f"Invalid number of tasks: {len(req.tasks)}")
+            raise HTTPException(status_code=400, detail="You must provide between 1 and 7 tasks to update.")
 
-        # Update all fields except task_id
-        for field in ["title", "description", "status", "created_at_time", "updated_at_time", "completed_at_time", "priority", "time", "recurring"]:
-            value = getattr(req, field, None)
-            if value is not None:
-                task_data[field] = value
+        # Test Firebase connectivity
+        try:
+            test_ref = db.reference("test_connectivity")
+            test_ref.set({"timestamp": now})
+            logger.debug("Firebase connectivity test successful")
+        except FirebaseError as e:
+            logger.error(f"Firebase connectivity test failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to connect to Firebase: {str(e)}")
 
-        task_ref.set(task_data)
+        updated_tasks = []
 
+        for task in req.tasks:
+            logger.debug(f"Processing task update: task_id={task.task_id}, date={task.date}")
+
+            try:
+                # Validate date format
+                datetime.datetime.fromisoformat(task.date.replace('Z', '+00:00'))
+            except ValueError as e:
+                logger.error(f"Invalid date format for task {task.task_id}: {str(e)}")
+                raise HTTPException(status_code=400, detail=f"Invalid date format for task {task.task_id}. Must be YYYY-MM-DD (e.g., '2025-08-13').")
+
+            task_ref = db.reference(f"users/{effective_uid}/custom_todo_lists/{task.date}/{task.task_id}")
+            task_data = task_ref.get()
+            if not task_data:
+                logger.error(f"Task not found for ID {task.task_id} on {task.date}")
+                raise HTTPException(status_code=404, detail=f"Task not found for ID {task.task_id} on {task.date}")
+
+            # Update fields using payload directly
+            update_data = task.dict(exclude={'task_id', 'date'}, exclude_none=True)
+            if not update_data.get('updated_at_time'):
+                update_data['updated_at_time'] = now
+            task_data.update(update_data)
+
+            try:
+                task_ref.set(task_data)
+                updated_tasks.append(task_data)
+                logger.info(f"Task {task.task_id} updated on {task.date}")
+            except FirebaseError as e:
+                logger.error(f"Firebase write failed for task {task.task_id} on {task.date}: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to update task {task.task_id} on {task.date}: {str(e)}")
+
+        if not updated_tasks:
+            logger.warning("No tasks were updated in the database.")
+            raise HTTPException(status_code=500, detail="No tasks were updated in the database. Check logs for details.")
+
+        logger.debug(f"Returning {len(updated_tasks)} updated tasks")
         return {
             "status": "success",
-            "task": task_data
+            "tasks": updated_tasks
         }
     except Exception as e:
         logger.error(f"Error in update-todo-task endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-@router.post("/delete-todo-task")
+
 async def delete_todo_task(req: GetLinkedUserTodoListsRequest):
     """
     Delete a specific to-do task for the user by date and task_id.
