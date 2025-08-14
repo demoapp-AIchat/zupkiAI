@@ -139,7 +139,7 @@ def fetch_pending_requests(req: TokenRequest):
         user_ref = db.reference(f"users/{uid}")
         user_data = user_ref.get()
         if not user_data:
-            raise HTTPException(status_code=404, detail="User not found")
+            raise HTTPException(status_code=404, detail="No User Found")
 
         pending_requests = user_data.get("pending_link_requests", {})
         # Filter requests to include only those with status "pending"
@@ -207,9 +207,7 @@ def fetch_child_details(req: TokenRequest):
             linked_ref = db.reference(f"users/{linked_uid}")
             linked_data = linked_ref.get()
             result[linked_uid] = {
-                "user_details": linked_data.get("user_details", {}),
-                "health_info": linked_data.get("health_info", {}),
-                "health_track": linked_data.get("health_track", {})
+                "user_details": linked_data.get("user_details", {})
             }
         return {"status": "success", "data": result}
     except Exception as e:
@@ -249,18 +247,31 @@ def delete_request(req: DeleteRequest):
         raise HTTPException(status_code=401, detail={"error": "Failed to delete request", "details": error_message})
 
 @router.post("/linked-user")
-def linked_children(req: TokenRequest):
-    """Fetch list of linked user."""
+def linked_user(req: TokenRequest):
+    """Fetch list of linked users and their details."""
     try:
         uid = verify_user_token(req.idToken)
         user_ref = db.reference(f"users/{uid}")
         user_data = user_ref.get()
         if not user_data:
             raise HTTPException(status_code=404, detail="User not found")
+        
         linked = user_data.get("linked", {})
-        return {"status": "success", "linked_uids": list(linked.keys())}
+        result = []
+        for linked_uid in linked.keys():
+            linked_ref = db.reference(f"users/{linked_uid}")
+            linked_data = linked_ref.get()
+            user_details = linked_data.get("user_details", {}) if linked_data else {}
+            result.append({
+                "uid": linked_uid,
+                "name": user_details.get("name", None),
+                "age": user_details.get("age", None),
+                
+            })
+        
+        return {"status": "success", "data": result}
     except Exception as e:
-        logger.error(f"Error fetching linked uids: {str(e)}")
+        logger.error(f"Error fetching linked users: {str(e)}")
         error_message = str(e)
         if hasattr(e, 'detail'):
             error_message = getattr(e, 'detail', error_message)
