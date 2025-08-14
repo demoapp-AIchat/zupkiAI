@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException,Body
-from models import TokenRequest,AddMultipleTodoTasksRequest,UpdateLinkedUserTodoTaskRequest,GetLinkedUserTodoListsRequest,UpdateMultipleTodoTasksRequest
+from models import TokenRequest,AddMultipleTodoTasksRequest,DeleteTaskRequest,GetLinkedUserTodoListsRequest,UpdateMultipleTodoTasksRequest
 from database import verify_user_token, fetch_user_data
 from helpers import india_tz, generate_random_time, is_valid_three_word_task, is_reminder_in_period
 from openai import AsyncOpenAI   
@@ -459,7 +459,7 @@ async def update_todo_task(req: UpdateMultipleTodoTasksRequest):
         logger.error(f"Error in update-todo-task endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-async def delete_todo_task(req: GetLinkedUserTodoListsRequest):
+async def delete_todo_task(req: DeleteTaskRequest):
     """
     Delete a specific to-do task for the user by date and task_id.
     """

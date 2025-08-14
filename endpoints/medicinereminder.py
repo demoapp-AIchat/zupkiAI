@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from database import verify_user_token, fetch_user_data
 from helpers import india_tz
-from models import AddMedicineReminderRequest, GetLinkedUserTodoListsRequest, UpdateMultipleMedicineRemindersRequest
+from models import AddMedicineReminderRequest, GetLinkedUserTodoListsRequest, UpdateMultipleMedicineRemindersRequest,DeleteMedicineRequest
 from firebase_admin import db
 from firebase_admin.exceptions import FirebaseError
 import datetime
@@ -265,7 +265,7 @@ async def update_medicine_reminder(req: UpdateMultipleMedicineRemindersRequest):
 
 
 @router.post("/delete-medicine-reminder")
-async def delete_medicine_reminder(req: GetLinkedUserTodoListsRequest):
+async def delete_medicine_reminder(req: DeleteMedicineRequest):
     """Delete a specific medicine reminder for the user by date and reminder_id."""
     try:
         logger.debug(f"Received request: {req.dict()}")

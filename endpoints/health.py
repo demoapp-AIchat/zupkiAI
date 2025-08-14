@@ -1,237 +1,290 @@
 from fastapi import APIRouter, HTTPException
-from models import HealthInfo, MedicineTrack, HealthMetricTrack, DeleteMedicineRequest, DeleteHealthMetricRequest,TokenRequest
+from pydantic import BaseModel
 from database import verify_user_token, fetch_user_data
+from helpers import india_tz
 from firebase_admin import db
+from models import AddHealthTrackRequest, GetLinkedUserTodoListsRequest, UpdateMultipleHealthTracksRequest, DeleteHealthTrackRequest
+from firebase_admin.exceptions import FirebaseError
+import datetime
 import logging
-from typing import List
-from models import Medicine, HealthMetric
+import uuid
+from typing import Optional, List
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-@router.post("/user-health")
-def save_user_health(req: HealthInfo):
-    """Save health information for a child account."""
+# Configure logging to show detailed messages
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+
+def get_accessible_uid(custom_uid: str, target_id: Optional[str], user_data: dict) -> str:
+    logger.debug(f"Checking accessible UID: custom_uid={custom_uid}, target_id={target_id}")
+    if target_id:
+        linked = user_data.get("linked", {})
+        if target_id not in linked:
+            logger.error(f"User {custom_uid} not linked to target_id {target_id}")
+            raise HTTPException(status_code=403, detail="You are not linked to this user.")
+        return target_id
+    return custom_uid
+
+def validate_and_format_number(value: Optional[str], field_name: str) -> Optional[str]:
+    """Validate that a string value is numeric and return it as a string."""
+    if value is None:
+        return None
     try:
-        custom_uid = verify_user_token(req.idToken)
-        user_ref = db.reference(f"users/{custom_uid}")
-        user_data = user_ref.get()
-        if not user_data or user_data.get("user_details", {}).get("account_type") != "child":
-            raise HTTPException(status_code=403, detail="Only child accounts can save health info")
-        health_info = {k: v for k, v in req.dict(exclude={"idToken"}).items() if v is not None}
-        if health_info:
-            user_ref.child("health_info").update(health_info)
-        return {"status": "success"}
-    except Exception as e:
-        logger.error(f"Error saving user health: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
+        # Convert to float to ensure it's a valid number
+        float_value = float(value)
+        return str(float_value)
+    except (ValueError, TypeError):
+        logger.error(f"Invalid {field_name} value: {value}. Must be a numeric string (e.g., '90', '70.5').")
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name} value: {value}. Must be a numeric string (e.g., '90', '70.5').")
 
-@router.get("/user-health")
-def fetch_user_health(req: TokenRequest):
-    """Fetch health information for a child or authorized parent."""
+def append_units(track_data: dict) -> dict:
+    """Append units to sugar (mg/dL), weight (kg), and heart_rate (bpm)."""
+    updated_data = track_data.copy()
+    if updated_data.get('sugar') is not None:
+        updated_data['sugar'] = f"{updated_data['sugar']} mg/dL"
+    if updated_data.get('weight') is not None:
+        updated_data['weight'] = f"{updated_data['weight']} kg"
+    if updated_data.get('heart_rate') is not None:
+        updated_data['heart_rate'] = f"{updated_data['heart_rate']} bpm"
+    return updated_data
+
+@router.post("/add-health-track")
+async def add_health_track(req: AddHealthTrackRequest):
+    """Add multiple health tracks for the user (up to 7), or for a linked user."""
     try:
-        custom_uid = verify_user_token(req.idToken)
-        user_ref = db.reference(f"users/{custom_uid}")
-        user_data = user_ref.get()
-        if not user_data or not user_data.get("health_info"):
-            raise HTTPException(status_code=404, detail="Health info not found")
-        if (user_data.get("user_details", {}).get("account_type") == "child" or 
-            custom_uid in user_data.get("user_details", {}).get("children", {})):
-            return {"status": "success", "data": user_data["health_info"]}
-        raise HTTPException(status_code=403, detail="Not authorized to access this data")
-    except Exception as e:
-        logger.error(f"Error fetching user health: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
-
-
-@router.post("/save-medicines")
-def save_medicines(req: MedicineTrack):
-    """Save medicine data for a child account."""
-    try:
-        custom_uid = verify_user_token(req.idToken)
-        user_ref = db.reference(f"users/{custom_uid}")
-
-        # Check if user is a child
-        user_data = user_ref.get()
-        if not user_data or user_data.get("user_details", {}).get("account_type") != "child":
-            raise HTTPException(status_code=403, detail="Only child accounts can save medicines")
-
-        # Reference to medicines node
-        med_ref = user_ref.child("health_track/medicines")
-        existing = med_ref.get()
-        current_length = len(existing) if existing else 0
-
-        # Save each medicine with next numeric key
-        for i, med in enumerate(req.medicines):
-            clean_data = {k: v for k, v in med.dict().items() if v is not None}
-            next_index = str(current_length + i)
-            med_ref.child(next_index).set(clean_data)
-
-        return {"status": "success", "message": "Medicines saved successfully"}
-
-    except Exception as e:
-        logger.error(f"Error saving medicines: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
-
-@router.post("/get-medicines", response_model=List[Medicine])
-async def get_medicines(req: TokenRequest):
-    """Fetch medicine data for a child account."""
-    try:
-        custom_uid = verify_user_token(req.idToken)
+        logger.debug(f"Received request: {req.dict()}")
         
-        user_ref = db.reference(f"users/{custom_uid}")
-        user_data = user_ref.get()
-        if not user_data or user_data.get("user_details", {}).get("account_type") != "child":
-            logger.warning(f"Access denied for UID: {custom_uid}, account_type: {user_data.get('user_details', {}).get('account_type')}")
-            raise HTTPException(status_code=403, detail="Only child accounts can access medicines")
-        
-        medicines_data = user_ref.child("health_track/medicines").get() or []
-        logger.info(f"Retrieved medicines data: {medicines_data}")
-        medicines = [
-            Medicine(
-                id=med.get("id"),
-                timestamp=med.get("timestamp"),
-                medicine_name=med.get("medicine_name"),
-                dosage=str(med.get("dosage")),
-                initial_quantity=med.get("initial_quantity"),
-                daily_intake=med.get("daily_intake")
-            )
-            for med in medicines_data
-            if med
-        ]
-        logger.info(f"Returning {len(medicines)} medicines")
-        return medicines
-   
+        custom_uid = verify_user_token(req.idToken)
+        if not custom_uid:
+            logger.error("Invalid token provided")
+            raise HTTPException(status_code=401, detail="Invalid token")
+
+        user_data = fetch_user_data(custom_uid)
+        if not user_data:
+            logger.error(f"User data not found for UID: {custom_uid}")
+            raise HTTPException(status_code=404, detail="User data not found")
+
+        effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
+        logger.debug(f"Effective UID: {effective_uid}")
+
+        now = datetime.datetime.now(india_tz).isoformat()
+        current_date = datetime.datetime.now(india_tz).date()
+        logger.debug(f"Current date: {current_date.isoformat()}, Current time: {now}")
+
+        if not req.tracks or len(req.tracks) > 7:
+            logger.error(f"Invalid number of tracks: {len(req.tracks)}")
+            raise HTTPException(status_code=400, detail="You must provide between 1 and 7 tracks.")
+
+        # Test Firebase connectivity
+        try:
+            test_ref = db.reference("test_connectivity")
+            test_ref.set({"timestamp": now})
+            logger.debug("Firebase connectivity test successful")
+        except FirebaseError as e:
+            logger.error(f"Firebase connectivity test failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to connect to Firebase: {str(e)}")
+
+        saved_tracks = []
+
+        for track in req.tracks:
+            logger.debug(f"Processing health track: bp={track.bp}, sugar={track.sugar}, weight={track.weight}, heart_rate={track.heart_rate}")
+
+            # Validate created_date
+            try:
+                track_date = datetime.datetime.fromisoformat(track.created_date.replace('Z', '+00:00')).date()
+                logger.debug(f"Using created_date {track.created_date} for health track")
+            except ValueError as e:
+                logger.error(f"Invalid created_date format: {str(e)}")
+                raise HTTPException(status_code=400, detail=f"Invalid created_date format. Must be ISO 8601 (e.g., '2025-08-14T01:38:00+05:30').")
+
+            # Validate numeric string fields
+            track_data = track.dict(exclude={'health_id'})
+            track_data['sugar'] = validate_and_format_number(track.sugar, 'sugar')
+            track_data['weight'] = validate_and_format_number(track.weight, 'weight')
+            track_data['heart_rate'] = validate_and_format_number(track.heart_rate, 'heart_rate')
+
+            # Append units
+            track_data = append_units(track_data)
+
+            health_id = str(uuid.uuid4())
+            track_data['health_id'] = health_id
+            if not track_data.get('updated_at_time'):
+                track_data['updated_at_time'] = now
+
+            try:
+                track_ref = db.reference(f"users/{effective_uid}/health_tracks/{track_date.isoformat()}/{health_id}")
+                logger.debug(f"Writing health track {health_id} to Firebase path: {track_ref.path}")
+                track_ref.set(track_data)
+                saved_tracks.append(track_data)
+                logger.info(f"Health track {health_id} saved for {track_date.isoformat()}")
+            except FirebaseError as e:
+                logger.error(f"Firebase write failed for health track {health_id} on {track_date.isoformat()}: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to save health track {health_id} on {track_date.isoformat()}: {str(e)}")
+
+        if not saved_tracks:
+            logger.warning("No health tracks were saved to the database.")
+            raise HTTPException(status_code=500, detail="No health tracks were saved to the database. Check logs for details.")
+
+        logger.debug(f"Returning {len(saved_tracks)} saved health tracks")
+        return {
+            "status": "success",
+            "tracks": saved_tracks
+        }
     except Exception as e:
-        logger.error(f"Error retrieving medicines: {str(e)}", exc_info=True)
+        logger.error(f"Error in add-health-track endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@router.delete("/delete-medicine")
-async def delete_medicine(req: DeleteMedicineRequest):
-    """Delete a medicine by ID for a child account."""
+@router.post("/get-all-health-tracks")
+async def get_all_health_tracks(req: GetLinkedUserTodoListsRequest):
+    """Fetch all health tracks for the user (all dates)."""
     try:
+        logger.debug(f"Received request: {req.dict()}")
+        
         custom_uid = verify_user_token(req.idToken)
-         
-        # Reference to the user's medicines in the database
-        user_ref = db.reference(f"users/{custom_uid}")
-        user_data = user_ref.get()
+        user_data = fetch_user_data(custom_uid)
         
-        # Check if the user is a child account
-        if not user_data or user_data.get("user_details", {}).get("account_type") != "child":
-            logger.warning(f"Access denied for UID: {custom_uid}, account_type: {user_data.get('user_details', {}).get('account_type')}")
-            raise HTTPException(status_code=403, detail="Only child accounts can access medicines")
+        effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
 
-        medicines_ref = user_ref.child("health_track/medicines")
-        medicines_data = medicines_ref.get() or []
-        
-        # Find and remove the medicine with the matching id
-        updated_medicines = [med for med in medicines_data if med.get("id") != req.medicine_id]
-        
-        # Check if the medicine was found and deleted
-        if len(updated_medicines) == len(medicines_data):
-            logger.warning(f"Medicine with id {req.medicine_id} not found for UID: {custom_uid}")
-            raise HTTPException(status_code=404, detail="Medicine not found")
+        tracks_ref = db.reference(f"users/{effective_uid}/health_tracks")
+        all_lists = tracks_ref.get() or {}
 
-        # Update the database with the new list
-        medicines_ref.set(updated_medicines)
-        logger.info(f"Successfully deleted medicine with id: {req.medicine_id} for UID: {custom_uid}")
-        return {"message": f"Medicine with id {req.medicine_id} deleted successfully"}
-    
-    
+        result = []
+        for date, tracks in all_lists.items():
+            if isinstance(tracks, dict):
+                result.append({
+                    "date": date,
+                    "tracks": list(tracks.values())
+                })
+
+        result.sort(key=lambda x: x["date"])
+        logger.debug(f"Returning {len(result)} health track lists")
+        return {
+            "status": "success",
+            "health_tracks": result
+        }
     except Exception as e:
-        logger.error(f"Error deleting medicine: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
-   
-@router.post("/save-health-metrics")
-def save_health_metrics(req: HealthMetricTrack):
-    """Save health metrics for a child account."""
-    try:
-        custom_uid = verify_user_token(req.idToken)
-        user_ref = db.reference(f"users/{custom_uid}")
-
-        # Check if user is a child
-        user_data = user_ref.get()
-        if not user_data or user_data.get("user_details", {}).get("account_type") != "child":
-            raise HTTPException(status_code=403, detail="Only child accounts can save health metrics")
-
-        # Reference to health_metrics node
-        metrics_ref = user_ref.child("health_track/health_metrics")
-        existing = metrics_ref.get()
-        current_length = len(existing) if existing else 0
-
-        # Append each metric with next numeric key
-        for i, metric in enumerate(req.health_metrics):
-            clean_data = {k: v for k, v in metric.dict().items() if v is not None}
-            next_index = str(current_length + i)
-            metrics_ref.child(next_index).set(clean_data)
-
-        return {"status": "success", "message": "Health metrics saved successfully"}
-
-    except Exception as e:
-        logger.error(f"Error saving health metrics: {str(e)}")
-        raise HTTPException(status_code=401, detail=str(e))
-
-@router.post("/get-health-metric", response_model=List[HealthMetric])
-async def get_health_metrics(req: TokenRequest):
-    """Fetch health metrics for a child account."""
-    try:
-        custom_uid = verify_user_token(req.idToken)
-        user_ref = db.reference(f"users/{custom_uid}")
-        user_data = user_ref.get()
-        if not user_data or user_data.get("user_details", {}).get("account_type") != "child":
-            logger.warning(f"Access denied for UID: {custom_uid}, account_type: {user_data.get('user_details', {}).get('account_type')}")
-            raise HTTPException(status_code=403, detail="Only child accounts can access health metrics")
-        
-        health_metrics_data = user_ref.child("health_track/health_metrics").get() or []
-        logger.info(f"Retrieved health metrics data: {health_metrics_data}")
-        health_metrics = [
-            HealthMetric(
-                id=metric.get("id"),
-                timestamp=metric.get("timestamp"),
-                metric=metric.get("metric"),
-                data=metric.get("data")
-            )
-            for metric in health_metrics_data
-            if metric
-        ]
-        logger.info(f"Returning {len(health_metrics)} health metrics")
-        return health_metrics
-    except Exception as e:
-        logger.error(f"Error retrieving health metrics: {str(e)}", exc_info=True)
+        logger.error(f"Error in get-all-health-tracks endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-@router.delete("/delete-health-metric")
-async def delete_health_metric(req: DeleteHealthMetricRequest):
-    """Delete a health metric by ID for a child account."""
+@router.post("/update-health-track")
+async def update_health_track(req: UpdateMultipleHealthTracksRequest):
+    """Update multiple health tracks for the user or a linked user."""
     try:
+        logger.debug(f"Received request: {req.dict()}")
+        
         custom_uid = verify_user_token(req.idToken)
-       
-        # Reference to the user's health metrics in the database
-        user_ref = db.reference(f"users/{custom_uid}")
-        user_data = user_ref.get()
-        
-        # Check if the user is a child account
-        if not user_data or user_data.get("user_details", {}).get("account_type") != "child":
-            logger.warning(f"Access denied for UID: {custom_uid}, account_type: {user_data.get('user_details', {}).get('account_type')}")
-            raise HTTPException(status_code=403, detail="Only child accounts can access health metrics")
+        if not custom_uid:
+            logger.error("Invalid token provided")
+            raise HTTPException(status_code=401, detail="Invalid token")
 
-        health_metrics_ref = user_ref.child("health_track/health_metrics")
-        health_metrics_data = health_metrics_ref.get() or []
-        
-        # Find and remove the health metric with the matching id
-        updated_health_metrics = [metric for metric in health_metrics_data if metric.get("id") != req.metric_id]
-        
-        # Check if the health metric was found and deleted
-        if len(updated_health_metrics) == len(health_metrics_data):
-            logger.warning(f"Health metric with id {req.metric_id} not found for UID: {custom_uid}")
-            raise HTTPException(status_code=404, detail="Health metric not found")
+        user_data = fetch_user_data(custom_uid)
+        if not user_data:
+            logger.error(f"User data not found for UID: {custom_uid}")
+            raise HTTPException(status_code=404, detail="User data not found")
 
-        # Update the database with the new list
-        health_metrics_ref.set(updated_health_metrics)
-        logger.info(f"Successfully deleted health metric with id: {req.metric_id} for UID: {custom_uid}")
-        return {"message": f"Health metric with id {req.metric_id} deleted successfully"}
-    
+        effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
+        logger.debug(f"Effective UID: {effective_uid}")
 
+        now = datetime.datetime.now(india_tz).isoformat()
+        logger.debug(f"Current time: {now}")
+
+        if not req.tracks or len(req.tracks) > 7:
+            logger.error(f"Invalid number of tracks: {len(req.tracks)}")
+            raise HTTPException(status_code=400, detail="You must provide between 1 and 7 tracks to update.")
+
+        # Test Firebase connectivity
+        try:
+            test_ref = db.reference("test_connectivity")
+            test_ref.set({"timestamp": now})
+            logger.debug("Firebase connectivity test successful")
+        except FirebaseError as e:
+            logger.error(f"Firebase connectivity test failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to connect to Firebase: {str(e)}")
+
+        updated_tracks = []
+
+        for track in req.tracks:
+            logger.debug(f"Processing health track update: health_id={track.health_id}, date={track.date}")
+
+            try:
+                # Validate date format
+                datetime.datetime.fromisoformat(track.date.replace('Z', '+00:00'))
+            except ValueError as e:
+                logger.error(f"Invalid date format for health track {track.health_id}: {str(e)}")
+                raise HTTPException(status_code=400, detail=f"Invalid date format for health track {track.health_id}. Must be YYYY-MM-DD (e.g., '2025-08-14').")
+
+            track_ref = db.reference(f"users/{effective_uid}/health_tracks/{track.date}/{track.health_id}")
+            track_data = track_ref.get()
+            if not track_data:
+                logger.error(f"Health track not found for ID {track.health_id} on {track.date}")
+                raise HTTPException(status_code=404, detail=f"Health track not found for ID {track.health_id} on {track.date}")
+
+            # Validate numeric string fields and append units
+            update_data = track.dict(exclude={'health_id', 'date'}, exclude_none=True)
+            if 'sugar' in update_data:
+                update_data['sugar'] = validate_and_format_number(track.sugar, 'sugar')
+            if 'weight' in update_data:
+                update_data['weight'] = validate_and_format_number(track.weight, 'weight')
+            if 'heart_rate' in update_data:
+                update_data['heart_rate'] = validate_and_format_number(track.heart_rate, 'heart_rate')
+            update_data = append_units(update_data)
+
+            if not update_data.get('updated_at_time'):
+                update_data['updated_at_time'] = now
+            track_data.update(update_data)
+
+            try:
+                track_ref.set(track_data)
+                updated_tracks.append(track_data)
+                logger.info(f"Health track {track.health_id} updated on {track.date}")
+            except FirebaseError as e:
+                logger.error(f"Firebase write failed for health track {track.health_id} on {track.date}: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Failed to update health track {track.health_id} on {track.date}: {str(e)}")
+
+        if not updated_tracks:
+            logger.warning("No health tracks were updated in the database.")
+            raise HTTPException(status_code=500, detail="No health tracks were updated in the database. Check logs for details.")
+
+        logger.debug(f"Returning {len(updated_tracks)} updated health tracks")
+        return {
+            "status": "success",
+            "tracks": updated_tracks
+        }
     except Exception as e:
-        logger.error(f"Error deleting health metric: {str(e)}", exc_info=True)
+        logger.error(f"Error in update-health-track endpoint: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+@router.post("/delete-health-track")
+async def delete_health_track(req: DeleteHealthTrackRequest):
+    """Delete a specific health track for the user by date and health_id."""
+    try:
+        logger.debug(f"Received request: {req.dict()}")
+        
+        custom_uid = verify_user_token(req.idToken)
+        user_data = fetch_user_data(custom_uid)
+        
+        effective_uid = get_accessible_uid(custom_uid, req.target_id, user_data)
+
+        track_ref = db.reference(f"users/{effective_uid}/health_tracks/{req.date}/{req.health_id}")
+        track_data = track_ref.get()
+        if not track_data:
+            logger.error(f"Health track not found for ID {req.health_id} on {req.date}")
+            raise HTTPException(status_code=404, detail="Health track not found")
+
+        try:
+            track_ref.delete()
+            logger.info(f"Health track {req.health_id} deleted on {req.date}")
+        except FirebaseError as e:
+            logger.error(f"Firebase delete failed for health track {req.health_id} on {req.date}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Failed to delete health track {req.health_id}: {str(e)}")
+
+        return {
+            "status": "success",
+            "message": f"Health track {req.health_id} deleted successfully."
+        }
+    except Exception as e:
+        logger.error(f"Error in delete-health-track endpoint: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")

@@ -81,11 +81,6 @@ class DeleteReminderRequest(BaseModel):
     idToken: str
     reminder_id: str
 
-class HealthTrack(BaseModel):
-    """Model for health tracking data."""
-    idToken: str
-    medicines: Optional[List[Medicine]] = None
-    health_metrics: Optional[List[HealthMetric]] = None
 
 class MedicineReminder(BaseModel):
     """Model for single medicine reminder."""
@@ -226,7 +221,7 @@ class HealthMetricTrack(BaseModel):
 class DeleteMedicineRequest(BaseModel):
     """Model for deleting a medicine."""
     idToken: str
-    medicine_id: str
+    reminder: str
 
 class DeleteHealthMetricRequest(BaseModel):
     """Model for deleting a health metric."""
@@ -289,3 +284,49 @@ class UpdateMultipleTodoTasksRequest(BaseModel):
     idToken: str
     target_id: Optional[str] = None
     tasks: List[UpdateTodoTask]
+
+class HealthTrack(BaseModel):
+    """Model for single health track record."""
+    health_id: Optional[str] = None
+    bp: Optional[str] = None
+    sugar: Optional[str] = None
+    weight: Optional[str] = None
+    heart_rate: Optional[str] = None
+    created_date: str  # ISO 8601 format, required for storage
+    updated_at_time: Optional[str] = None
+
+class AddHealthTrackRequest(BaseModel):
+    """Model for adding health tracks."""
+    idToken: str
+    target_id: Optional[str] = None
+    tracks: List[HealthTrack]
+
+class UpdateHealthTrack(BaseModel):
+    date: str
+    health_id: str
+    bp: Optional[str] = None
+    sugar: Optional[str] = None
+    weight: Optional[str] = None
+    heart_rate: Optional[str] = None
+    created_date: Optional[str] = None
+    updated_at_time: Optional[str] = None
+
+class UpdateMultipleHealthTracksRequest(BaseModel):
+    idToken: str
+    target_id: Optional[str] = None
+    tracks: List[UpdateHealthTrack]
+class DeleteHealthTrackRequest(BaseModel):
+    idToken: str
+    target_id: Optional[str] = None
+    date: str
+    health_id: str
+class DeleteMedicineRequest(BaseModel):
+    idToken: str
+    target_id: Optional[str] = None
+    date: str
+    reminder_id: str
+class DeleteTaskRequest(BaseModel):
+    idToken: str
+    target_id: Optional[str] = None
+    date: str
+    task_id: str
